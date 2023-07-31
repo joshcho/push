@@ -110,29 +110,33 @@
              db rules task-id)
         reverse))
 
-     (defn stop-running-task [now]
-       (d/transact! !conn
-                    [{:db/id         @!running-id
-                      :task/interval {:db/id          -1
-                                      :interval/start @!running-start
-                                      :interval/end   now}}])
-       (reset! !running-id nil)
-       (reset! !running-start nil)
-       )
-
-     (defn run-selected-task [now]
-       ;; we can't use stop-running-task because we have to sync the start and end times
-       ;; much like compare-and-swap
-       (when @!running-id
+     (defn stop-running-task []
+       (let [now (System/currentTimeMillis)]
          (d/transact! !conn
                       [{:db/id         @!running-id
                         :task/interval {:db/id          -1
                                         :interval/start @!running-start
-                                        :interval/end   now}}]))
-       (reset! !running-id @!selected-id)
-       (reset! !running-start now))
+                                        :interval/end   now}}])
+         (reset! !running-id nil)
+         (reset! !running-start nil))
+       )
+
+     (defn run-selected-task []
+       ;; we can't use stop-running-task because we have to sync the start and end times
+       ;; much like compare-and-swap
+       (let [now (System/currentTimeMillis)]
+         (when @!running-id
+           (d/transact! !conn
+                        [{:db/id         @!running-id
+                          :task/interval {:db/id          -1
+                                          :interval/start @!running-start
+                                          :interval/end   now}}]))
+         (reset! !running-id @!selected-id)
+         (reset! !running-start now)))
 
      (comment
+       (:task/interval
+        (d/entity @!conn 26))
        ;; (tests
        ;;  (get-ancestor-task-ids @!conn 5) := [1 2]
        ;;  (set (get-descendant-task-ids @!conn 2)) := (set [4 5 7 8]))
@@ -235,8 +239,7 @@
                    (ui/button
                      (e/fn []
                        (if (= selected-id task-id)
-                         (e/server
-                          (run-selected-task e/system-time-ms))
+                         (e/server (run-selected-task))
                          (e/server (reset! !selected-id task-id))))
                      (dom/props {:class "w-full text-left flex"})
                      (dom/text task)
@@ -275,65 +278,90 @@
             (SelectTaskButton. breadcrumbs-task-id
                                {:class "hover:underline"})))))))
 
-(e/defn SelectedPanel []
+(e/defn SelectedStatus []
   (let [ancestor-task-ids   (e/server (get-ancestor-task-ids db running-id))
         descendant-task-ids (e/server (get-descendant-task-ids db running-id))]
     (dom/div
-      (dom/props {:class "grow p-2 sm:ml-2 rounded bg-base-200 sm:min-h-full"})
-      (dom/div
-        (Breadcrumbs.)
-        (if selected-id
-          (dom/div
+      (dom/props {:class "text-sm mt-[2px]"})
+      (cond (in? ancestor-task-ids selected-id)
             (dom/div
-              (dom/props {:class "text-lg"})
-              (dom/text (e/server
-                         (-> (d/entity db selected-id)
-                             :task/name))))
-            (if (= running-id selected-id)
-              (ui/button
-                (e/fn []
-                  (e/server
-                   (stop-running-task e/system-time-ms)))
-                (dom/props {:class "btn btn-xs block"})
-                (dom/text "Stop"))
-              (ui/button
-                (e/fn []
-                  (e/server
-                   (run-selected-task e/system-time-ms)))
-                (dom/props {:class "btn btn-xs block"})
-                (dom/text "Start"))))
-          (dom/text "Select any task.")))
-      (dom/div
-        (dom/props {:class "text-sm mt-[2px]"})
-        (cond (in? ancestor-task-ids selected-id)
-              (dom/div
-                (dom/text "Ancestor of currently running ")
-                (SelectTaskButton. running-id
-                                   {:class "text-xs italic"}))
-              (and
-               running-id           ; we should have something running
-               (= selected-id running-id))
-              (let [duration (e/server
-                              (int
-                               (/ (- e/system-time-ms running-start)
-                                  1000)))]
-                (if (= duration 0)
-                  (dom/text "Starting "
-                            (e/server
-                             (-> (d/entity db selected-id)
-                                 :task/name)))
-                  (dom/text "Elapsed for " duration " s")))
-              (in? descendant-task-ids selected-id)
-              (dom/div
-                (dom/text "Descendant of currently running ")
-                (SelectTaskButton. running-id
-                                   {:class "text-xs italic"})))))))
+              (dom/text "Ancestor of currently running ")
+              (SelectTaskButton. running-id
+                                 {:class "text-xs italic"}))
+            (and
+             running-id           ; we should have something running
+             (= selected-id running-id))
+            (let [duration (e/server
+                            (int
+                             (/ (- e/system-time-ms running-start)
+                                1000)))]
+              (if (= duration 0)
+                (dom/text "Starting "
+                          (e/server
+                           (-> (d/entity db selected-id)
+                               :task/name)))
+                (dom/text "Elapsed for " duration " s")))
+            (in? descendant-task-ids selected-id)
+            (dom/div
+              (dom/text "Descendant of currently running ")
+              (SelectTaskButton. running-id
+                                 {:class "text-xs italic"}))))))
+
+(e/defn SelectedRunButton []
+  (if (= running-id selected-id)
+    (ui/button
+      (e/fn []
+        (e/server
+         (stop-running-task)))
+      (dom/props {:class "btn btn-xs block"})
+      (dom/text "Stop"))
+    (ui/button
+      (e/fn []
+        (e/server
+         (run-selected-task)))
+      (dom/props {:class "btn btn-xs block"})
+      (dom/text "Start"))))
+
+#?(:cljs
+   (defn millis-to-date-format [millis]
+     (let [date    (js/Date. millis)
+           month   (.getUTCMonth date)
+           day     (.getUTCDate date)
+           hours   (.getUTCHours date)
+           minutes (.getUTCMinutes date)]
+       (str (inc month) "/" day " " hours ":" minutes))))
+
+(e/defn SelectedPanel []
+  (dom/div
+    (dom/props {:class "grow p-2 sm:ml-2 rounded bg-base-200 sm:min-h-full"})
+    (dom/div
+      (Breadcrumbs.)
+      (if selected-id
+        (dom/div
+          (dom/div
+            (dom/props {:class "text-lg"})
+            (dom/text (e/server
+                       (-> (d/entity db selected-id)
+                           :task/name))))
+          (SelectedRunButton.))
+        (dom/text "Select any task.")))
+    (SelectedStatus.)
+    (dom/div
+      (e/for [[start end] (e/server
+                           (map #(vector (:interval/start %)
+                                         (:interval/end %))
+                                (:task/interval (d/entity db selected-id))))]
+        (dom/div
+          (dom/text
+           (millis-to-date-format start)
+           " ~ "
+           (millis-to-date-format end)))))))
 
 (e/defn PushApp []
   (e/server
    (binding [db (e/watch !conn)]
      (e/client
       (dom/div
-        (dom/props {:class "m-10 sm:flex h-fit"})
+        (dom/props {:class "m-10 sm:flex h-fit min-w-[14rem]"})
         (TasksPanel.)
         (SelectedPanel.))))))
