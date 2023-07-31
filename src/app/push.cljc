@@ -14,6 +14,36 @@
 
 (comment
   (hyperfiddle.rcf/enable!))
+
+(defn make-history-atom [src-atom]
+  "Return an atom that keeps the history of src-atom."
+  (let [history-atom (atom (if @src-atom
+                             [@src-atom]
+                             []))]
+    (add-watch src-atom :history
+               (fn [_ _ old new]
+                 (when-not (= old new)
+                   (swap! history-atom #(conj % new)))))
+    history-atom))
+
+(comment
+  (tests
+   (let [test-atom (atom 0)
+         history-atom
+         (make-history-atom test-atom)]
+     (swap! test-atom inc)
+     (swap! test-atom inc)
+     (swap! test-atom inc)
+     @history-atom)
+   := [0 1 2 3]
+   (let [test-atom (atom nil)
+         history-atom
+         (make-history-atom test-atom)]
+     (reset! test-atom 0)
+     (swap! test-atom inc)
+     @history-atom)
+   := [0 1]))
+
 #?(:clj
    (do
      (defonce schema {:task/subtask      {:db/cardinality :db.cardinality/many
@@ -30,7 +60,8 @@
        (d/create-conn schema)
        ;; (d/get-conn "/tmp/datalevin/mygdbd" schema)
        )
-     (defonce !running-id (atom nil))))
+     (defonce !running-id (atom nil))
+     (defonce !running-history (make-history-atom !running-id))))
 (e/def db)
 (e/def running-id (e/server (e/watch !running-id)))
 
@@ -97,7 +128,8 @@
        (d/transact! !conn [{:db/id        14 :task/name "Break"
                             :task/subtask [{:db/id 15 :task/name "Netflix"}
                                            {:db/id 16 :task/name "YouTube"}
-                                           {:db/id 17 :task/name "Free Break"}]}]))))
+                                           {:db/id 17 :task/name "Free Break"}]}])
+       (d/transact! !conn [{:db/id 18 :task/name "Misc"}]))))
 
 (defn map-is-last
   "Go from a list to a list of pairs where the first is the item and the second is whether the item is the last item in the list."
@@ -111,34 +143,6 @@
   (tests
    (map-is-last [1 2 3]) := '([1 false] [2 false] [3 true])
    (map-is-last nil) := '()))
-
-(defn make-history-atom [src-atom]
-  "Return an atom that keeps the history of src-atom."
-  (let [history-atom (atom (if @src-atom
-                             [@src-atom]
-                             []))]
-    (add-watch src-atom :history
-               (fn [_ _ _ new]
-                 (swap! history-atom #(conj % new))))
-    history-atom))
-
-(comment
-  (tests
-   (let [test-atom (atom 0)
-         history-atom
-         (make-history-atom test-atom)]
-     (swap! test-atom inc)
-     (swap! test-atom inc)
-     (swap! test-atom inc)
-     @history-atom)
-   := [0 1 2 3]
-   (let [test-atom (atom nil)
-         history-atom
-         (make-history-atom test-atom)]
-     (reset! test-atom 0)
-     (swap! test-atom inc)
-     @history-atom)
-   := [0 1]))
 
 ;; (e/defn Task [task-id editing !editing-map editing-map !selected-id selected-id]
 ;;   (dom/div (dom/text (e/server (task-name db task-id)))))
@@ -160,7 +164,9 @@
     (let [!editing (atom false), editing (e/watch !editing)]
       (dom/div
         (dom/props {:class "text-xl font-bold"})
-        (dom/text "Day 5")
+        (ui/button
+          (e/fn [] (reset! !selected-id nil))
+          (dom/text "Day 5"))
         (ui/button
           (e/fn [] (swap! !editing not))
           (dom/props {:class "ml-1 btn btn-xs"})
@@ -216,38 +222,37 @@
         descendant-task-ids (e/server (get-descendant-task-ids db running-id))]
     (dom/div
       (dom/props {:class "grow p-2 sm:ml-2 rounded bg-base-200 h-64"})
-      (if selected-id
+      (dom/div
         (dom/div
+          (dom/props {:class "mt-[-10px] mb-[-8px] text-xs breadcrumbs"})
+          (dom/ul
+            (let [running-history (e/server (e/watch !running-history))
+                  ordered-ancestor-ids
+                  (e/server (vec (map #(:db/id (d/entity db %))
+                                      (get-ancestor-task-ids db selected-id))))]
+              (e/for [breadcrumbs-task-id
+                      (take-last 4 running-history)]
+                (dom/li
+                  (SelectTaskButton. !selected-id breadcrumbs-task-id
+                                     {:class "hover:underline"}))))))
+        (if selected-id
           (dom/div
-            (dom/props {:class "mt-[-10px] mb-[-8px] text-xs breadcrumbs"})
-            (dom/ul
-              (let [!selected-history (make-history-atom !selected-id)
-                    selected-history  (e/watch !selected-history)
-                    ordered-ancestor-ids
-                    (e/server (vec (map #(:db/id (d/entity db %))
-                                        (get-ancestor-task-ids db selected-id))))]
-                (e/for [breadcrumbs-task-id
-                        (take-last 3 (reverse (distinct (reverse selected-history))))]
-                  (dom/li
-                    (SelectTaskButton. !selected-id breadcrumbs-task-id
-                                       {:class "hover:underline"}))))))
-          (dom/div
-            (dom/props {:class "text-lg"})
-            (dom/text (e/server
-                       (-> (d/entity db selected-id)
-                           :task/name))))
-          (ui/button
-            (e/fn []
-              (e/server (reset! !running-id
-                                (if (= @!running-id selected-id)
-                                  nil selected-id))))
-            (dom/props {:class "btn btn-xs block"})
-            (dom/text
-             (if (= running-id selected-id)
-               "Stop"
-               "Start"))))
-
-        (dom/text "Select any task."))
+            (dom/div
+              (dom/props {:class "text-lg"})
+              (dom/text (e/server
+                         (-> (d/entity db selected-id)
+                             :task/name))))
+            (ui/button
+              (e/fn []
+                (e/server (reset! !running-id
+                                  (if (= @!running-id selected-id)
+                                    nil selected-id))))
+              (dom/props {:class "btn btn-xs block"})
+              (dom/text
+               (if (= running-id selected-id)
+                 "Stop"
+                 "Start"))))
+          (dom/text "Select any task.")))
       (dom/div
         (dom/props {:class "text-sm"})
         (cond (in? ancestor-task-ids selected-id)
