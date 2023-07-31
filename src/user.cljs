@@ -3,6 +3,9 @@
    ;; app.todo-list
    ;; app.fibonacci-demo
    app.push
+   app.recursion
+   app.experiment
+   app.demo-todos-advanced
    ;; app.temperature-converter
    hyperfiddle.electric
    hyperfiddle.electric-dom2))
@@ -17,6 +20,10 @@
      ;; (app.fibonacci-demo/FibonacciApp.)
      ;; (app.temperature-converter/TemperatureConverter.)
      (app.push/PushApp.)
+     ;; (app.experiment/ExperimentApp.)
+     ;; (app.experiment/App.)
+
+     ;; (app.demo-todos-advanced/AdvancedTodoList.)
      )))
 
 (defonce reactor nil)
