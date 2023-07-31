@@ -221,7 +221,7 @@
                                         (:task/name (d/entity db task-id))))
                      task        (e/watch !task)
                      subtask-ids (e/server
-                                  (map :db/id (:task/subtask (d/entity db task-id))))
+                                  (sort (map :db/id (:task/subtask (d/entity db task-id)))))
                      !toggled    (atom true)
                      toggled     (e/watch !toggled)]
                  (dom/div
@@ -313,12 +313,16 @@
               (and
                running-id           ; we should have something running
                (= selected-id running-id))
-              (dom/text "Elapsed for "
-                        (e/server
-                         (int
-                          (/ (- e/system-time-ms running-start)
-                             1000)))
-                        " s")
+              (let [duration (e/server
+                              (int
+                               (/ (- e/system-time-ms running-start)
+                                  1000)))]
+                (if (= duration 0)
+                  (dom/text "Starting "
+                            (e/server
+                             (-> (d/entity db selected-id)
+                                 :task/name)))
+                  (dom/text "Elapsed for " duration " s")))
               (in? descendant-task-ids selected-id)
               (dom/div
                 (dom/text "Descendant of currently running ")
