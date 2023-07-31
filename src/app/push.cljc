@@ -1,5 +1,6 @@
 (ns app.push
-  (:import [hyperfiddle.electric Pending])
+  (:import [hyperfiddle.electric Pending]
+           #?(:clj [java.time Duration Instant]))
   (:require
    ;; #?(:clj [datalevin.core :as d])
    #?(:clj [datascript.core :as d])
@@ -22,7 +23,8 @@
                              []))]
     (add-watch src-atom :history
                (fn [_ _ old new]
-                 (when-not (= old new)
+                 (when (and (not (= old new))
+                            new)
                    (swap! history-atom #(conj % new)))))
     history-atom))
 
@@ -46,24 +48,28 @@
 
 #?(:clj
    (do
-     (defonce schema {:task/subtask      {:db/cardinality :db.cardinality/many
-                                          :db/valueType   :db.type/ref}
-                      :task/name         {:db/unique :db.unique/identity}
-                      :task/interval     {:db/cardinality :db.cardinality/many
-                                          :db/valueType   :db.type/ref}
+     ;; add user, creation date, root-tasks
+     (defonce schema {:task/subtask   {:db/cardinality :db.cardinality/many
+                                       :db/valueType   :db.type/ref}
+                      :task/name      {}
+                      :task/interval  {:db/cardinality :db.cardinality/many
+                                       :db/valueType   :db.type/ref}
                       ;; for datalevin, {:db/valueType :db.type/instant}
-                      :task/active-start {}
-                      :interval/start    {}
-                      :interval/end      {}
+                      :interval/start {}
+                      :interval/end   {}
                       })
      (defonce !conn
        (d/create-conn schema)
        ;; (d/get-conn "/tmp/datalevin/mygdbd" schema)
        )
      (defonce !running-id (atom nil))
+     (defonce !running-start (atom nil))
+     (defonce !selected-id (atom nil))
      (defonce !running-history (make-history-atom !running-id))))
 (e/def db)
 (e/def running-id (e/server (e/watch !running-id)))
+(e/def running-start (e/server (e/watch !running-start)))
+(e/def selected-id (e/server (e/watch !selected-id)))
 
 (defn in? [list elem]
   (some #(= % elem) list))
@@ -103,6 +109,29 @@
                (ancestor ?task ?ancestor)]
              db rules task-id)
         reverse))
+
+     (defn stop-running-task [now]
+       (d/transact! !conn
+                    [{:db/id         @!running-id
+                      :task/interval {:db/id          -1
+                                      :interval/start @!running-start
+                                      :interval/end   now}}])
+       (reset! !running-id nil)
+       (reset! !running-start nil)
+       )
+
+     (defn run-selected-task [now]
+       ;; we can't use stop-running-task because we have to sync the start and end times
+       ;; much like compare-and-swap
+       (when @!running-id
+         (d/transact! !conn
+                      [{:db/id         @!running-id
+                        :task/interval {:db/id          -1
+                                        :interval/start @!running-start
+                                        :interval/end   now}}]))
+       (reset! !running-id @!selected-id)
+       (reset! !running-start now))
+
      (comment
        ;; (tests
        ;;  (get-ancestor-task-ids @!conn 5) := [1 2]
@@ -110,79 +139,91 @@
        )
 
      (comment
-       (ancestor-task-ids @!conn 5)
        (d/transact! !conn [{:db/id 1 :task/name "Software"}])
+       (d/transact! !conn [{:db/id 26 :task/name "Misc"}])
        (d/transact! !conn [{:db/id 1 :task/subtask [{:db/id 2 :task/name "Push"}
                                                     {:db/id 3 :task/name "Slix"}
                                                     {:db/id 9 :task/name "Emacs Extension"}]}])
        (d/transact! !conn [{:db/id 2 :task/subtask [{:db/id 4 :task/name "Learn Libraries"}
-                                                    {:db/id 5 :task/name "Code"}]}])
-       (ancestor-task-ids @!conn 3)
+                                                    {:db/id 5 :task/name "Code"}
+                                                    {:db/id 20 :task/name "Design"}
+                                                    {:db/id 22 :task/name "Think"}]}])
        (d/transact! !conn [{:db/id 4 :task/subtask [{:db/id 8 :task/name "Electric"}
                                                     {:db/id 7 :task/name "Missionary"}
-                                                    {:db/id 10 :task/name "Portfolio"}]}])
+                                                    {:db/id 10 :task/name "Portfolio"}
+                                                    {:db/id 23 :task/name "Lexical"}]}])
        (d/transact! !conn [{:db/id 5 :task/subtask [{:db/id 11 :task/name "Compose"}
                                                     {:db/id 12 :task/name "Test"}
                                                     {:db/id 13 :task/name
-                                                     "Refactor"}]}])
+                                                     "Refactor"}
+                                                    {:db/id 19 :task/name
+                                                     "Navigate"}
+                                                    {:db/id 27 :task/name
+                                                     "Debug"}]}])
        (d/transact! !conn [{:db/id        14 :task/name "Break"
                             :task/subtask [{:db/id 15 :task/name "Netflix"}
                                            {:db/id 16 :task/name "YouTube"}
                                            {:db/id 17 :task/name "Free Break"}]}])
-       (d/transact! !conn [{:db/id 18 :task/name "Misc"}]))))
+       (d/transact! !conn [{:db/id 1 :task/subtask [{:db/id 18 :task/name "Cursory Look"}]}])
+       (d/transact! !conn [{:db/id 20 :task/subtask [{:db/id 21 :task/name "Introspectively"}]}])
+       (d/transact! !conn [{:db/id 22 :task/subtask [{:db/id 24 :task/name "Think about how to incorporate Lexical"}
+                                                     {:db/id 25 :task/name "Philosophically"}]}])
+       )))
 
-(defn map-is-last
-  "Go from a list to a list of pairs where the first is the item and the second is whether the item is the last item in the list."
-  [xs]
-  (map vector xs
-       (map (partial = (- (count xs)
-                          1))
-            (range))))
-
-(comment
-  (tests
-   (map-is-last [1 2 3]) := '([1 false] [2 false] [3 true])
-   (map-is-last nil) := '()))
-
-;; (e/defn Task [task-id editing !editing-map editing-map !selected-id selected-id]
-;;   (dom/div (dom/text (e/server (task-name db task-id)))))
+(e/defn SVGVerticalLine []
+  (svg/line (dom/props {:x1     0,       :x2           10
+                        :y1     5,       :y2           5
+                        :stroke "black", :stroke-width 1})))
+(e/defn SVGHorizontalLine []
+  (svg/line (dom/props {:x1     5,       :x2           5
+                        :y1     0.2,     :y2           9.8
+                        :stroke "black", :stroke-width 1})))
 
 (e/defn Toggle [!toggled]
   (let [toggled (e/watch !toggled)]
     (ui/button
       (e/fn []
         (swap! !toggled not))
-      (dom/props {:class "ml-1 btn btn-xs"})
+      (dom/props {:class "ml-1 btn btn-xs w-fit px-1"})
       (dom/on "click" (e/fn [e]
                         (.stopPropagation e)))
-      (dom/text (if toggled "+" "-")))))
+      (if toggled
+        (svg/svg (dom/props {:width  10
+                             :height 10})
+                 (SVGVerticalLine.)
+                 (SVGHorizontalLine.))
+        (svg/svg (dom/props {:width  10
+                             :height 10})
+                 (SVGVerticalLine.))))))
 
 (e/def TaskList)
-(e/defn TasksPanel [!selected-id]
+(e/defn TasksPanel []
   (dom/div
-    (dom/props {:class "grow sm:max-w-xs min-h-[14rem] min-h-full sm:h-none mb-2 sm:mb-0 p-2 rounded bg-base-200"})
+    (dom/props {:class "grow sm:max-w-xs min-h-[14rem] sm:min-h-[18rem] min-h-full sm:h-none mb-2 sm:mb-0 p-2 rounded bg-base-200"})
     (let [!editing (atom false), editing (e/watch !editing)]
       (dom/div
-        (dom/props {:class "text-xl font-bold"})
+        (dom/props {:class "text-xl font-bold flex items-center"})
         (ui/button
-          (e/fn [] (reset! !selected-id nil))
+          (e/fn [] (e/server (reset! !selected-id running-id)))
           (dom/text "Day 5"))
         (ui/button
           (e/fn [] (swap! !editing not))
-          (dom/props {:class "ml-1 btn btn-xs"})
+          (dom/props {:class "ml-2 btn mt-[1px] btn-xs bg-base-100"})
           (dom/text (if editing "stop editing" "edit"))))
       (binding
           [TaskList
            (e/fn [task-ids]
-             (e/for [[task-id is-last] (map-is-last task-ids)]
+             (e/for [[task-id is-last]
+                     (map-indexed (fn [idx task-id]
+                                    [task-id (= idx (dec (count task-ids)))])
+                                  task-ids)]
                (let [!task       (atom (e/server
                                         (:task/name (d/entity db task-id))))
                      task        (e/watch !task)
                      subtask-ids (e/server
                                   (map :db/id (:task/subtask (d/entity db task-id))))
                      !toggled    (atom true)
-                     toggled     (e/watch !toggled)
-                     selected-id (e/watch !selected-id)]
+                     toggled     (e/watch !toggled)]
                  (dom/div
                    (dom/props
                     {:class (str "flex "
@@ -194,8 +235,9 @@
                    (ui/button
                      (e/fn []
                        (if (= selected-id task-id)
-                         (e/server (reset! !running-id task-id))
-                         (reset! !selected-id task-id)))
+                         (e/server
+                          (run-selected-task e/system-time-ms))
+                         (e/server (reset! !selected-id task-id))))
                      (dom/props {:class "w-full text-left flex"})
                      (dom/text task)
                      (when (seq subtask-ids)
@@ -208,33 +250,38 @@
                      (TaskList. subtask-ids))))))]
         (TaskList. (e/server (get-root-task-ids db)))))))
 
-(e/defn SelectTaskButton [!selected-id target-id props]
+(e/defn SelectTaskButton [target-id props]
   (ui/button
     (e/fn []
-      (reset! !selected-id target-id))
+      (e/server (reset! !selected-id target-id)))
     (dom/props props)
     (dom/text
      (e/server (:task/name (d/entity db target-id))))))
 
-(e/defn SelectedPanel [!selected-id]
-  (let [selected-id         (e/watch !selected-id)
-        ancestor-task-ids   (e/server (get-ancestor-task-ids db running-id))
+(e/defn Breadcrumbs []
+  (dom/div
+    (dom/props {:class "mt-[-10px] mb-[-8px] text-xs breadcrumbs"})
+    (dom/ul
+      (let [running-history (e/server (e/watch !running-history))
+            ordered-ancestor-ids
+            (e/server (vec (map #(:db/id (d/entity db %))
+                                (get-ancestor-task-ids db selected-id))))]
+        (e/for [breadcrumbs-task-id
+                (->> running-history
+                     (partition-by identity)
+                     (map first)
+                     (take-last 4))]
+          (dom/li
+            (SelectTaskButton. breadcrumbs-task-id
+                               {:class "hover:underline"})))))))
+
+(e/defn SelectedPanel []
+  (let [ancestor-task-ids   (e/server (get-ancestor-task-ids db running-id))
         descendant-task-ids (e/server (get-descendant-task-ids db running-id))]
     (dom/div
-      (dom/props {:class "grow p-2 sm:ml-2 rounded bg-base-200 h-64"})
+      (dom/props {:class "grow p-2 sm:ml-2 rounded bg-base-200 sm:min-h-full"})
       (dom/div
-        (dom/div
-          (dom/props {:class "mt-[-10px] mb-[-8px] text-xs breadcrumbs"})
-          (dom/ul
-            (let [running-history (e/server (e/watch !running-history))
-                  ordered-ancestor-ids
-                  (e/server (vec (map #(:db/id (d/entity db %))
-                                      (get-ancestor-task-ids db selected-id))))]
-              (e/for [breadcrumbs-task-id
-                      (take-last 4 running-history)]
-                (dom/li
-                  (SelectTaskButton. !selected-id breadcrumbs-task-id
-                                     {:class "hover:underline"}))))))
+        (Breadcrumbs.)
         (if selected-id
           (dom/div
             (dom/div
@@ -242,41 +289,47 @@
               (dom/text (e/server
                          (-> (d/entity db selected-id)
                              :task/name))))
-            (ui/button
-              (e/fn []
-                (e/server (reset! !running-id
-                                  (if (= @!running-id selected-id)
-                                    nil selected-id))))
-              (dom/props {:class "btn btn-xs block"})
-              (dom/text
-               (if (= running-id selected-id)
-                 "Stop"
-                 "Start"))))
+            (if (= running-id selected-id)
+              (ui/button
+                (e/fn []
+                  (e/server
+                   (stop-running-task e/system-time-ms)))
+                (dom/props {:class "btn btn-xs block"})
+                (dom/text "Stop"))
+              (ui/button
+                (e/fn []
+                  (e/server
+                   (run-selected-task e/system-time-ms)))
+                (dom/props {:class "btn btn-xs block"})
+                (dom/text "Start"))))
           (dom/text "Select any task.")))
       (dom/div
-        (dom/props {:class "text-sm"})
+        (dom/props {:class "text-sm mt-[2px]"})
         (cond (in? ancestor-task-ids selected-id)
               (dom/div
                 (dom/text "Ancestor of currently running ")
-                (SelectTaskButton. !selected-id running-id
+                (SelectTaskButton. running-id
                                    {:class "text-xs italic"}))
               (and
-               running-id               ; we should have something running
+               running-id           ; we should have something running
                (= selected-id running-id))
-              (dom/text "Elapsed for (Mysterious number of seconds)")
+              (dom/text "Elapsed for "
+                        (e/server
+                         (int
+                          (/ (- e/system-time-ms running-start)
+                             1000)))
+                        " s")
               (in? descendant-task-ids selected-id)
               (dom/div
                 (dom/text "Descendant of currently running ")
-                (SelectTaskButton. !selected-id running-id
+                (SelectTaskButton. running-id
                                    {:class "text-xs italic"})))))))
 
 (e/defn PushApp []
   (e/server
    (binding [db (e/watch !conn)]
      (e/client
-      (let [!selected-id (atom nil)]
-        ;; (add-watch !selected-id :watch)
-        (dom/div
-          (dom/props {:class "m-10 sm:flex"})
-          (TasksPanel. !selected-id)
-          (SelectedPanel. !selected-id)))))))
+      (dom/div
+        (dom/props {:class "m-10 sm:flex h-fit"})
+        (TasksPanel.)
+        (SelectedPanel.))))))
