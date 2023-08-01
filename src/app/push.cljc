@@ -3,6 +3,7 @@
            #?(:clj [java.time Duration Instant]))
   (:require
    ;; #?(:clj [datalevin.core :as d])
+   ;; when you switch this, make sure to switch tx.clj and db.clj, too
    #?(:clj [datascript.core :as d])
    [app.utils :as u]
    #?(:clj [app.tx :as tx])
@@ -79,6 +80,7 @@
                               @conn)]
            (d/transact conn (mapv (fn [[e]] [:db/retract e :task/interval]) intervals))))
        (delete-all-intervals !conn)
+       (def !running-history (u/make-history-atom !running-id))
        ;; (tests
        ;;  (d/get-ancestor-task-ids @!conn 5) := [1 2]
        ;;  (set (d/get-descendant-task-ids @!conn 2)) := (set [4 5 7 8]))
@@ -126,12 +128,9 @@
                         :stroke "black", :stroke-width 1})))
 
 (e/defn Toggle [task-id]
-  (let [toggled
-        (if (u/in? temp-show-task-ids task-id)
-          false
-          (e/server (:task/toggled (d/entity db task-id))))
-        ;; (e/watch !toggled)
-        ]
+  (let [toggled (if (u/in? temp-show-task-ids task-id)
+                  false
+                  (e/server (:task/toggled (d/entity db task-id))))]
     (ui/button
       (e/fn []
         (e/server
@@ -145,14 +144,67 @@
       (dom/props {:class "ml-1 btn btn-xs w-fit px-1"})
       (dom/on "click" (e/fn [e]
                         (.stopPropagation e)))
-      (if toggled
-        (svg/svg (dom/props {:width  10
-                             :height 10})
-                 (SVGVerticalLine.)
-                 (SVGHorizontalLine.))
-        (svg/svg (dom/props {:width  10
-                             :height 10})
-                 (SVGHorizontalLine.))))))
+      (svg/svg (dom/props {:width  10
+                           :height 10})
+               (when toggled
+                 (SVGVerticalLine.))
+               (SVGHorizontalLine.)))))
+
+(e/defn TaskActionButton [action text]
+  (ui/button
+    action
+    (dom/props {:class "btn btn-xs "})
+    (dom/on "click" (e/fn [e]
+                      (.stopPropagation e)))
+    (dom/text text)))
+
+(e/defn TaskActionButtons [task-id]
+  (dom/div
+    (dom/props {:class "ml-1 flex"})
+    (TaskActionButton.
+     (e/fn []
+       (e/server
+        (tx/transact! !conn [{:db/id        task-id
+                              :task/subtask [{:db/id     -1
+                                              :task/name "~stub~"}]
+                              :task/toggled false}])))
+     "Add")
+    (TaskActionButton.
+     (e/fn []
+       (e/server
+        (tx/transact! !conn [[:db.fn/retractEntity task-id]])))
+     "Del")
+    (let [!edit-text (atom nil),
+          edit-text  (e/watch !edit-text)]
+      (dom/div
+        (dom/props {:class "flex"})
+        (TaskActionButton.
+         (e/fn []
+           (if @!edit-text
+             (do
+               (e/server (tx/transact! !conn [{:db/id task-id :task/name edit-text}]))
+               (reset! !edit-text nil))
+             (reset! !edit-text (e/server (:task/name (d/entity db task-id))))))
+         (if edit-text
+           "Confirm Edit"
+           "Edit"))
+        (when edit-text
+          (ui/input
+           edit-text
+           (e/fn [v]
+             (reset! !edit-text v))
+           (dom/props {:class "input input-sm absolute border-black border-2 mt-6 w-32"})
+           (dom/on "click"
+                   (e/fn [e]
+                     (.stopPropagation e)))
+           (dom/on "keydown"
+                   (e/fn [e]
+                     (when (u/in? ["Enter" "Escape"] (.-key e))
+                       (.preventDefault e)
+                       (.stopPropagation e)
+                       (e/server (tx/transact!
+                                  !conn [{:db/id task-id :task/name edit-text}]))
+                       (reset! !edit-text nil))))))))))
 
 (e/def TaskList)
 (e/defn TasksPanel []
@@ -172,9 +224,9 @@
         (binding
             [TaskList
              (e/fn [task-ids]
-               (e/for [[task-id is-last]
+               (e/for [[is-last task-id]
                        (map-indexed (fn [idx task-id]
-                                      [task-id (= idx (dec (count task-ids)))])
+                                      [(= idx (dec (count task-ids))) task-id])
                                     task-ids)]
                  (let [task        (e/server
                                     (:task/name (d/entity db task-id)))
@@ -185,9 +237,7 @@
                       {:class (str "flex "
                                    ;; don't use cond
                                    (when (= task-id running-id)
-                                     "font-bold ")
-                                   (when (= task-id selected-id)
-                                     "underline "))})
+                                     "font-bold "))})
                      (ui/button
                        (e/fn []
                          ;; for disabling double-click
@@ -197,11 +247,19 @@
                              (e/server (run-selected-task)))
                            (e/server (reset! !selected-id task-id))))
                        (dom/props {:class "w-full text-left flex"})
-                       (dom/text task)
-                       (when (seq subtask-ids)
-                         (dom/div
-                           (dom/props {:class "no-underline"})
-                           (Toggle. task-id)))))
+                       (dom/div
+                         (dom/props {:class (when (= task-id selected-id)
+                                              "underline ")})
+                         (dom/text task))
+                       (dom/div
+                         (dom/props {:class (when-not (and (seq subtask-ids)
+                                                           (not editing))
+                                              "hidden")})
+                         (Toggle. task-id))
+                       (dom/div
+                         (dom/props {:class (when-not editing
+                                              "hidden")})
+                         (TaskActionButtons. task-id))))
                    (dom/div
                      (dom/props {:class "ml-2"})
                      (dom/div
@@ -238,33 +296,41 @@
         show-cutoff  (e/watch !show-cutoff)]
     (dom/div
       (dom/props {:class (str "flex text-xs "
-                              "ml-[-4px]")})
+                              "ml-[-6px] mt-[-3px]")})
       (ui/button
         (e/fn []
           (swap! !show-cutoff not))
-        (dom/props {:class "w-3 mt-[-8px] font-bold"})
+        (dom/props {:class "w-3 mt-[-6.5px] font-bold"})
         (dom/text "."))
       (dom/div
         (dom/props {:class "ml-[1px] mt-[-10px] mb-[-8px] text-xs breadcrumbs"})
         (dom/ul
-          (let [running-history      (e/server (e/watch !running-history))
+          (let [running-history (e/server (e/watch !running-history))
                 ordered-ancestor-ids
                 (e/server (vec (map #(:db/id (d/entity db %))
                                     (db/get-ancestor-task-ids db selected-id))))
-                breadcrumbs-task-ids (->> running-history
-                                          (partition-by identity)
-                                          (map first))]
-            (e/for [breadcrumbs-task-id
-                    (if show-cutoff
-                      (take-last max-cutoff breadcrumbs-task-ids)
-                      (take-last cutoff breadcrumbs-task-ids))]
+                ;; breadcrumbs-task-ids
+                bc-task-ids     (take-last (if show-cutoff
+                                             max-cutoff cutoff)
+                                           ;; remove sequential dups
+                                           (->> running-history
+                                                (partition-by identity)
+                                                (map first)))]
+            (e/for [[is-last bc-task-id]
+                    (map-indexed (fn [idx bc-task-id]
+                                   [(= idx (dec (count bc-task-ids))) bc-task-id])
+                                 bc-task-ids)]
               (dom/li
-                (SelectTaskButton. breadcrumbs-task-id
-                                   {:class
-                                    (str
-                                     "hover:underline "
-                                     (when (= breadcrumbs-task-id selected-id)
-                                       "underline"))})))))))))
+                (dom/div
+                  (dom/props {:class "mt-[1.5px]"})
+                  (SelectTaskButton. bc-task-id
+                                     {:class
+                                      (str
+                                       "hover:underline "
+                                       (when (if (= selected-id running-id)
+                                               is-last
+                                               (= selected-id bc-task-id))
+                                         "underline"))}))))))))))
 
 (e/defn SelectedStatus []
   (let [ancestor-task-ids   (e/server (db/get-ancestor-task-ids db running-id))
@@ -296,49 +362,49 @@
                                  {:class "text-xs italic"}))))))
 
 (e/defn RunButton []
-  (if (= running-id selected-id)
+  (let [is-running (= running-id selected-id)]
     (ui/button
       (e/fn []
         (e/server
-         (stop-running-task)))
-      (dom/props {:class "btn btn-xs block"})
-      (dom/text "Stop"))
-    (ui/button
-      (e/fn []
-        (e/server
-         (run-selected-task)))
-      (dom/props {:class "btn btn-xs block"})
-      (dom/text "Start"))))
+         (if is-running
+           (stop-running-task)
+           (run-selected-task))))
+      (dom/props {:class "btn btn-xs block bg-base-300 animation-none hover:bg-base-100"})
+      (dom/text
+       (if is-running "Stop" "Start")))))
 
 (e/defn SelectedPanel []
   (dom/div
     (dom/props {:class "grow p-2 sm:ml-2 rounded bg-base-200 sm:min-h-full"})
     (dom/div
       (Breadcrumbs.))
-    (dom/div
-      (if selected-id
-        (dom/div
-          (dom/div
-            (dom/props {:class "text-lg"})
-            (dom/text (e/server
-                       (-> (d/entity db selected-id)
-                           :task/name))))
-          (RunButton.))
-        (dom/text "Select any task."))
-      (SelectedStatus.)
+    (if selected-id
       (dom/div
-        (e/for [[start end] (e/server
-                             (reverse
-                              (sort-by
-                               first
-                               (map #(vector (:interval/start %)
-                                             (:interval/end %))
-                                    (:task/interval (d/entity db selected-id))))))]
+        (dom/div
+          (dom/props {:class "text-lg"})
+          (dom/text (e/server
+                     (-> (d/entity db selected-id)
+                         :task/name))))
+        (dom/div
+          (dom/props {:class "ml-2 mt-[1px]"})
           (dom/div
-            (dom/text
-             (u/millis-to-date-format start)
-             " ~ "
-             (u/millis-to-date-format end))))))))
+            (dom/props {:class "mb-[5px]"})
+            (RunButton.))
+          (SelectedStatus.)
+          (dom/div
+            (e/for [[start end] (e/server
+                                 (reverse
+                                  (sort-by
+                                   first
+                                   (map #(vector (:interval/start %)
+                                                 (:interval/end %))
+                                        (:task/interval (d/entity db selected-id))))))]
+              (dom/div
+                (dom/text
+                 (u/millis-to-date-format start)
+                 " ~ "
+                 (u/millis-to-date-format end)))))))
+      (dom/text "Select any task."))))
 
 (e/defn PushApp []
   (e/server

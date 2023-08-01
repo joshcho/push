@@ -2,6 +2,11 @@
   (:require
    [datascript.core :as d]))
 
-(defn transact! [& args]
-  (apply d/transact! args)
-  nil)
+(defn transact!
+  "Equivalent to d/transact! but for use in hyperfiddle.electric/server blocks."
+  ([conn tx-data]
+   (d/transact! conn tx-data)
+   nil)
+  ([conn tx-data tx-meta]
+   (d/transact! conn tx-data tx-meta)
+   nil))
