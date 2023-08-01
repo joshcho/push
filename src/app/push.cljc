@@ -12,9 +12,7 @@
    [hyperfiddle.electric-ui4 :as ui]
    [hyperfiddle.electric-svg :as svg]
    [hyperfiddle.rcf :refer [tests]]
-   [contrib.str :refer [empty->nil]]
-   ;; #?(:cljs )
-   ))
+   [contrib.str :refer [empty->nil]]))
 
 #?(:clj
    (do
@@ -41,6 +39,8 @@
 (e/def running-id (e/server (e/watch !running-id)))
 (e/def running-start (e/server (e/watch !running-start)))
 (e/def selected-id (e/server (e/watch !selected-id)))
+#?(:cljs (defonce !temp-show-task-ids (atom nil)))
+(e/def temp-show-task-ids (e/client (e/watch !temp-show-task-ids)))
 
 #?(:clj
    (do
@@ -119,7 +119,9 @@
 
 (e/defn Toggle [task-id]
   (let [toggled
-        (e/server (:task/toggled (d/entity db task-id)))
+        (if (u/in? temp-show-task-ids task-id)
+          false
+          (e/server (:task/toggled (d/entity db task-id))))
         ;; (e/watch !toggled)
         ]
     (ui/button
@@ -128,9 +130,11 @@
         (e/server
          (tx/transact! !conn [{:db/id task-id
                                :task/toggled
-                               (not (:task/toggled (d/entity @!conn task-id)))}]))
-        ;; (swap! !toggled not)
-        )
+                               (not (if (some #(= % task-id) (e/client
+                                                              @!temp-show-task-ids))
+                                      false
+                                      (:task/toggled (d/entity @!conn task-id))))}]))
+        (reset! !temp-show-task-ids nil))
       (dom/props {:class "ml-1 btn btn-xs w-fit px-1"})
       (dom/on "click" (e/fn [e]
                         (.stopPropagation e)))
@@ -165,9 +169,8 @@
                        (map-indexed (fn [idx task-id]
                                       [task-id (= idx (dec (count task-ids)))])
                                     task-ids)]
-                 (let [!task       (atom (e/server
-                                          (:task/name (d/entity db task-id))))
-                       task        (e/watch !task)
+                 (let [task        (e/server
+                                    (:task/name (d/entity db task-id)))
                        subtask-ids (e/server
                                     (sort (map :db/id (:task/subtask (d/entity db task-id)))))]
                    (dom/div
@@ -192,22 +195,30 @@
                            (dom/props {:class "no-underline"})
                            (Toggle. task-id)))))
                    (dom/div
-                     (dom/props {:class (str "ml-2 "
-                                             (when (e/server (:task/toggled (d/entity db task-id)))
-                                               "hidden"))})
-                     (TaskList. subtask-ids)))))]
+                     (dom/props {:class "ml-2"})
+                     (dom/div
+                       (dom/props {:class
+                                   (when (if (u/in? temp-show-task-ids
+                                                    task-id)
+                                           false
+                                           (e/server
+                                            (:task/toggled
+                                             (d/entity db task-id))))
+                                     "hidden")})
+                       (TaskList. subtask-ids))))))]
           (TaskList. (e/server (db/get-root-task-ids db))))))))
 
 (e/defn SelectTaskButton [target-id props]
   (ui/button
     (e/fn []
-      (e/server (reset! !selected-id target-id))
+      (e/server
+       (reset! !selected-id target-id))
       (doseq [ancestor-task-id (e/server (db/get-ancestor-task-ids db target-id))]
         (e/server
          (tx/transact! !conn [{:db/id        ancestor-task-id
                                :task/toggled false}])))
-      (js/console.log "Opening all above " target-id)
-      nil)
+      ;; (reset! !temp-show-task-ids (e/server (db/get-ancestor-task-ids db target-id)))
+      )
     (dom/props props)
     (dom/text
      (e/server (:task/name (d/entity db target-id))))))
@@ -241,7 +252,11 @@
                       (take-last cutoff breadcrumbs-task-ids))]
               (dom/li
                 (SelectTaskButton. breadcrumbs-task-id
-                                   {:class "hover:underline"})))))))))
+                                   {:class
+                                    (str
+                                     "hover:underline "
+                                     (when (= breadcrumbs-task-id selected-id)
+                                       "underline"))})))))))))
 
 (e/defn SelectedStatus []
   (let [ancestor-task-ids   (e/server (db/get-ancestor-task-ids db running-id))
@@ -323,5 +338,6 @@
      (e/client
       (dom/div
         (dom/props {:class "m-10 sm:flex h-fit min-w-[14rem]"})
+        ;; (dom/text temp-show-task-ids)
         (TasksPanel.)
         (SelectedPanel.))))))

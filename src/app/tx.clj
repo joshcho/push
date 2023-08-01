@@ -1,4 +1,4 @@
-(ns app.db
+(ns app.tx
   (:require
    [datascript.core :as d]))
 
