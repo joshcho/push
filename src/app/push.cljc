@@ -5,6 +5,7 @@
    ;; #?(:clj [datalevin.core :as d])
    #?(:clj [datascript.core :as d])
    [app.utils :as u]
+   #?(:clj [app.tx :as tx])
    #?(:clj [app.db :as db])
    [hyperfiddle.electric :as e]
    [hyperfiddle.electric-dom2 :as dom]
@@ -23,6 +24,7 @@
                       :task/name      {}
                       :task/interval  {:db/cardinality :db.cardinality/many
                                        :db/valueType   :db.type/ref}
+                      :task/toggled   {}
                       ;; for datalevin, {:db/valueType :db.type/instant}
                       :interval/start {}
                       :interval/end   {}
@@ -115,11 +117,20 @@
                         :y1     0.2,     :y2           9.8
                         :stroke "black", :stroke-width 1})))
 
-(e/defn Toggle [!toggled]
-  (let [toggled (e/watch !toggled)]
+(e/defn Toggle [task-id]
+  (let [toggled
+        (e/server (:task/toggled (d/entity db task-id)))
+        ;; (e/watch !toggled)
+        ]
     (ui/button
       (e/fn []
-        (swap! !toggled not))
+        (js/console.log "Toggling " task-id)
+        (e/server
+         (tx/transact! !conn [{:db/id task-id
+                               :task/toggled
+                               (not (:task/toggled (d/entity @!conn task-id)))}]))
+        ;; (swap! !toggled not)
+        )
       (dom/props {:class "ml-1 btn btn-xs w-fit px-1"})
       (dom/on "click" (e/fn [e]
                         (.stopPropagation e)))
@@ -146,52 +157,57 @@
           (e/fn [] (swap! !editing not))
           (dom/props {:class "ml-2 btn mt-[1px] btn-xs bg-base-100"})
           (dom/text (if editing "stop editing" "edit"))))
-      (binding
-          [TaskList
-           (e/fn [task-ids]
-             (e/for [[task-id is-last]
-                     (map-indexed (fn [idx task-id]
-                                    [task-id (= idx (dec (count task-ids)))])
-                                  task-ids)]
-               (let [!task       (atom (e/server
-                                        (:task/name (d/entity db task-id))))
-                     task        (e/watch !task)
-                     subtask-ids (e/server
-                                  (sort (map :db/id (:task/subtask (d/entity db task-id)))))
-                     !toggled    (atom true)
-                     toggled     (e/watch !toggled)]
-                 (dom/div
-                   (dom/props
-                    {:class (str "flex "
-                                 ;; don't use cond
-                                 (when (= task-id running-id)
-                                   "font-bold ")
-                                 (when (= task-id selected-id)
-                                   "underline "))})
-                   (ui/button
-                     (e/fn []
-                       ;; for disabling double-click
-                       ;; (e/server (reset! !selected-id task-id))
-                       (if (= selected-id task-id)
-                         (e/server (run-selected-task))
-                         (e/server (reset! !selected-id task-id))))
-                     (dom/props {:class "w-full text-left flex"})
-                     (dom/text task)
-                     (when (seq subtask-ids)
-                       (dom/div
-                         (dom/props {:class "no-underline"})
-                         (Toggle. !toggled)))))
-                 (when-not toggled
+      (dom/div
+        (binding
+            [TaskList
+             (e/fn [task-ids]
+               (e/for [[task-id is-last]
+                       (map-indexed (fn [idx task-id]
+                                      [task-id (= idx (dec (count task-ids)))])
+                                    task-ids)]
+                 (let [!task       (atom (e/server
+                                          (:task/name (d/entity db task-id))))
+                       task        (e/watch !task)
+                       subtask-ids (e/server
+                                    (sort (map :db/id (:task/subtask (d/entity db task-id)))))]
                    (dom/div
-                     (dom/props {:class "ml-2"})
-                     (TaskList. subtask-ids))))))]
-        (TaskList. (e/server (db/get-root-task-ids db)))))))
+                     (dom/props
+                      {:class (str "flex "
+                                   ;; don't use cond
+                                   (when (= task-id running-id)
+                                     "font-bold ")
+                                   (when (= task-id selected-id)
+                                     "underline "))})
+                     (ui/button
+                       (e/fn []
+                         ;; for disabling double-click
+                         ;; (e/server (reset! !selected-id task-id))
+                         (if (= selected-id task-id)
+                           (e/server (run-selected-task))
+                           (e/server (reset! !selected-id task-id))))
+                       (dom/props {:class "w-full text-left flex"})
+                       (dom/text task)
+                       (when (seq subtask-ids)
+                         (dom/div
+                           (dom/props {:class "no-underline"})
+                           (Toggle. task-id)))))
+                   (dom/div
+                     (dom/props {:class (str "ml-2 "
+                                             (when (e/server (:task/toggled (d/entity db task-id)))
+                                               "hidden"))})
+                     (TaskList. subtask-ids)))))]
+          (TaskList. (e/server (db/get-root-task-ids db))))))))
 
 (e/defn SelectTaskButton [target-id props]
   (ui/button
     (e/fn []
       (e/server (reset! !selected-id target-id))
-      (js/console.log "Opening all above " target-id))
+      (doseq [ancestor-task-id (e/server (db/get-ancestor-task-ids db target-id))]
+        (e/server
+         (tx/transact! !conn [{:db/id        ancestor-task-id
+                               :task/toggled false}])))
+      (js/console.log "Opening all above " target-id)
+      nil)
     (dom/props props)
     (dom/text
      (e/server (:task/name (d/entity db target-id))))))
@@ -274,30 +290,32 @@
 (e/defn SelectedPanel []
   (dom/div
     (dom/props {:class "grow p-2 sm:ml-2 rounded bg-base-200 sm:min-h-full"})
-    (Breadcrumbs.)
-    (if selected-id
-      (dom/div
-        (dom/div
-          (dom/props {:class "text-lg"})
-          (dom/text (e/server
-                     (-> (d/entity db selected-id)
-                         :task/name))))
-        (RunButton.))
-      (dom/text "Select any task."))
-    (SelectedStatus.)
     (dom/div
-      (e/for [[start end] (e/server
-                           (reverse
-                            (sort-by
-                             first
-                             (map #(vector (:interval/start %)
-                                           (:interval/end %))
-                                  (:task/interval (d/entity db selected-id))))))]
+      (Breadcrumbs.))
+    (dom/div
+      (if selected-id
         (dom/div
-          (dom/text
-           (u/millis-to-date-format start)
-           " ~ "
-           (u/millis-to-date-format end)))))))
+          (dom/div
+            (dom/props {:class "text-lg"})
+            (dom/text (e/server
+                       (-> (d/entity db selected-id)
+                           :task/name))))
+          (RunButton.))
+        (dom/text "Select any task."))
+      (SelectedStatus.)
+      (dom/div
+        (e/for [[start end] (e/server
+                             (reverse
+                              (sort-by
+                               first
+                               (map #(vector (:interval/start %)
+                                             (:interval/end %))
+                                    (:task/interval (d/entity db selected-id))))))]
+          (dom/div
+            (dom/text
+             (u/millis-to-date-format start)
+             " ~ "
+             (u/millis-to-date-format end))))))))
 
 (e/defn PushApp []
   (e/server
