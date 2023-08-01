@@ -3,6 +3,7 @@
    ;; app.todo-list
    ;; app.fibonacci-demo
    app.push
+   app.scenes
    app.recursion
    app.experiment
    app.demo-todos-advanced
@@ -19,6 +20,7 @@
    (binding [hyperfiddle.electric-dom2/node js/document.body]
      ;; (app.fibonacci-demo/FibonacciApp.)
      ;; (app.temperature-converter/TemperatureConverter.)
+     ;; (app.scenes/ScenesApp.)
      (app.push/PushApp.)
      ;; (app.experiment/ExperimentApp.)
      ;; (app.experiment/App.)

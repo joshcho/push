@@ -4,6 +4,8 @@
   (:require
    ;; #?(:clj [datalevin.core :as d])
    #?(:clj [datascript.core :as d])
+   [app.utils :as u]
+   #?(:clj [app.db :as db])
    [hyperfiddle.electric :as e]
    [hyperfiddle.electric-dom2 :as dom]
    [hyperfiddle.electric-ui4 :as ui]
@@ -12,39 +14,6 @@
    [contrib.str :refer [empty->nil]]
    ;; #?(:cljs )
    ))
-
-(comment
-  (hyperfiddle.rcf/enable!))
-
-(defn make-history-atom [src-atom]
-  "Return an atom that keeps the history of src-atom."
-  (let [history-atom (atom (if @src-atom
-                             [@src-atom]
-                             []))]
-    (add-watch src-atom :history
-               (fn [_ _ old new]
-                 (when (and (not (= old new))
-                            new)
-                   (swap! history-atom #(conj % new)))))
-    history-atom))
-
-(comment
-  (tests
-   (let [test-atom (atom 0)
-         history-atom
-         (make-history-atom test-atom)]
-     (swap! test-atom inc)
-     (swap! test-atom inc)
-     (swap! test-atom inc)
-     @history-atom)
-   := [0 1 2 3]
-   (let [test-atom (atom nil)
-         history-atom
-         (make-history-atom test-atom)]
-     (reset! test-atom 0)
-     (swap! test-atom inc)
-     @history-atom)
-   := [0 1]))
 
 #?(:clj
    (do
@@ -65,51 +34,14 @@
      (defonce !running-id (atom nil))
      (defonce !running-start (atom nil))
      (defonce !selected-id (atom nil))
-     (defonce !running-history (make-history-atom !running-id))))
+     (defonce !running-history (u/make-history-atom !running-id))))
 (e/def db)
 (e/def running-id (e/server (e/watch !running-id)))
 (e/def running-start (e/server (e/watch !running-start)))
 (e/def selected-id (e/server (e/watch !selected-id)))
 
-(defn in? [list elem]
-  (some #(= % elem) list))
-
 #?(:clj
    (do
-     (defn get-root-task-ids [db]
-       (->>
-        (d/q '[:find [(pull ?e [:db/id :task/name :task/subtask]) ...]
-               :where
-               [?e :task/name ?n]
-               (not [?f :task/subtask ?e])]
-             db)
-        (map :db/id)
-        sort))
-     (def rules
-       '[[(ancestor ?e ?a)
-          [?e :task/subtask ?a]]
-         [(ancestor ?e ?a)
-          [?e :task/subtask ?b]
-          (ancestor ?b ?a)]])
-
-     (defn get-ancestor-task-ids [db task-id]
-       (->
-        (d/q '[:find [?ancestor ...]
-               :in $ % ?task
-               :where
-               (ancestor ?ancestor ?task)]
-             db rules task-id)
-        reverse))
-
-     (defn get-descendant-task-ids [db task-id]
-       (->
-        (d/q '[:find [?ancestor ...]
-               :in $ % ?task
-               :where
-               (ancestor ?task ?ancestor)]
-             db rules task-id)
-        reverse))
-
      (defn stop-running-task []
        (let [now (System/currentTimeMillis)]
          (d/transact! !conn
@@ -138,8 +70,8 @@
        (:task/interval
         (d/entity @!conn 26))
        ;; (tests
-       ;;  (get-ancestor-task-ids @!conn 5) := [1 2]
-       ;;  (set (get-descendant-task-ids @!conn 2)) := (set [4 5 7 8]))
+       ;;  (d/get-ancestor-task-ids @!conn 5) := [1 2]
+       ;;  (set (d/get-descendant-task-ids @!conn 2)) := (set [4 5 7 8]))
        )
 
      (comment
@@ -174,11 +106,11 @@
                                                      {:db/id 25 :task/name "Philosophically"}]}])
        )))
 
-(e/defn SVGVerticalLine []
+(e/defn SVGHorizontalLine []
   (svg/line (dom/props {:x1     0,       :x2           10
                         :y1     5,       :y2           5
                         :stroke "black", :stroke-width 1})))
-(e/defn SVGHorizontalLine []
+(e/defn SVGVerticalLine []
   (svg/line (dom/props {:x1     5,       :x2           5
                         :y1     0.2,     :y2           9.8
                         :stroke "black", :stroke-width 1})))
@@ -198,7 +130,7 @@
                  (SVGHorizontalLine.))
         (svg/svg (dom/props {:width  10
                              :height 10})
-                 (SVGVerticalLine.))))))
+                 (SVGHorizontalLine.))))))
 
 (e/def TaskList)
 (e/defn TasksPanel []
@@ -238,6 +170,8 @@
                                    "underline "))})
                    (ui/button
                      (e/fn []
+                       ;; for disabling double-click
+                       ;; (e/server (reset! !selected-id task-id))
                        (if (= selected-id task-id)
                          (e/server (run-selected-task))
                          (e/server (reset! !selected-id task-id))))
@@ -251,39 +185,54 @@
                    (dom/div
                      (dom/props {:class "ml-2"})
                      (TaskList. subtask-ids))))))]
-        (TaskList. (e/server (get-root-task-ids db)))))))
+        (TaskList. (e/server (db/get-root-task-ids db)))))))
 
 (e/defn SelectTaskButton [target-id props]
   (ui/button
     (e/fn []
-      (e/server (reset! !selected-id target-id)))
+      (e/server (reset! !selected-id target-id))
+      (js/console.log "Opening all above " target-id))
     (dom/props props)
     (dom/text
      (e/server (:task/name (d/entity db target-id))))))
 
 (e/defn Breadcrumbs []
-  (dom/div
-    (dom/props {:class "mt-[-10px] mb-[-8px] text-xs breadcrumbs"})
-    (dom/ul
-      (let [running-history (e/server (e/watch !running-history))
-            ordered-ancestor-ids
-            (e/server (vec (map #(:db/id (d/entity db %))
-                                (get-ancestor-task-ids db selected-id))))]
-        (e/for [breadcrumbs-task-id
-                (->> running-history
-                     (partition-by identity)
-                     (map first)
-                     (take-last 4))]
-          (dom/li
-            (SelectTaskButton. breadcrumbs-task-id
-                               {:class "hover:underline"})))))))
+  (let [cutoff       4
+        max-cutoff   10
+        !show-cutoff (atom false)
+        show-cutoff  (e/watch !show-cutoff)]
+    (dom/div
+      (dom/props {:class (str "flex text-xs "
+                              "ml-[-4px]")})
+      (ui/button
+        (e/fn []
+          (swap! !show-cutoff not))
+        (dom/props {:class "w-3 mt-[-8px] font-bold"})
+        (dom/text "."))
+      (dom/div
+        (dom/props {:class "ml-[1px] mt-[-10px] mb-[-8px] text-xs breadcrumbs"})
+        (dom/ul
+          (let [running-history      (e/server (e/watch !running-history))
+                ordered-ancestor-ids
+                (e/server (vec (map #(:db/id (d/entity db %))
+                                    (db/get-ancestor-task-ids db selected-id))))
+                breadcrumbs-task-ids (->> running-history
+                                          (partition-by identity)
+                                          (map first))]
+            (e/for [breadcrumbs-task-id
+                    (if show-cutoff
+                      (take-last max-cutoff breadcrumbs-task-ids)
+                      (take-last cutoff breadcrumbs-task-ids))]
+              (dom/li
+                (SelectTaskButton. breadcrumbs-task-id
+                                   {:class "hover:underline"})))))))))
 
 (e/defn SelectedStatus []
-  (let [ancestor-task-ids   (e/server (get-ancestor-task-ids db running-id))
-        descendant-task-ids (e/server (get-descendant-task-ids db running-id))]
+  (let [ancestor-task-ids   (e/server (db/get-ancestor-task-ids db running-id))
+        descendant-task-ids (e/server (db/get-descendant-task-ids db running-id))]
     (dom/div
       (dom/props {:class "text-sm mt-[2px]"})
-      (cond (in? ancestor-task-ids selected-id)
+      (cond (u/in? ancestor-task-ids selected-id)
             (dom/div
               (dom/text "Ancestor of currently running ")
               (SelectTaskButton. running-id
@@ -301,13 +250,13 @@
                            (-> (d/entity db selected-id)
                                :task/name)))
                 (dom/text "Elapsed for " duration " s")))
-            (in? descendant-task-ids selected-id)
+            (u/in? descendant-task-ids selected-id)
             (dom/div
               (dom/text "Descendant of currently running ")
               (SelectTaskButton. running-id
                                  {:class "text-xs italic"}))))))
 
-(e/defn SelectedRunButton []
+(e/defn RunButton []
   (if (= running-id selected-id)
     (ui/button
       (e/fn []
@@ -322,40 +271,33 @@
       (dom/props {:class "btn btn-xs block"})
       (dom/text "Start"))))
 
-#?(:cljs
-   (defn millis-to-date-format [millis]
-     (let [date    (js/Date. millis)
-           month   (.getUTCMonth date)
-           day     (.getUTCDate date)
-           hours   (.getUTCHours date)
-           minutes (.getUTCMinutes date)]
-       (str (inc month) "/" day " " hours ":" minutes))))
-
 (e/defn SelectedPanel []
   (dom/div
     (dom/props {:class "grow p-2 sm:ml-2 rounded bg-base-200 sm:min-h-full"})
-    (dom/div
-      (Breadcrumbs.)
-      (if selected-id
+    (Breadcrumbs.)
+    (if selected-id
+      (dom/div
         (dom/div
-          (dom/div
-            (dom/props {:class "text-lg"})
-            (dom/text (e/server
-                       (-> (d/entity db selected-id)
-                           :task/name))))
-          (SelectedRunButton.))
-        (dom/text "Select any task.")))
+          (dom/props {:class "text-lg"})
+          (dom/text (e/server
+                     (-> (d/entity db selected-id)
+                         :task/name))))
+        (RunButton.))
+      (dom/text "Select any task."))
     (SelectedStatus.)
     (dom/div
       (e/for [[start end] (e/server
-                           (map #(vector (:interval/start %)
-                                         (:interval/end %))
-                                (:task/interval (d/entity db selected-id))))]
+                           (reverse
+                            (sort-by
+                             first
+                             (map #(vector (:interval/start %)
+                                           (:interval/end %))
+                                  (:task/interval (d/entity db selected-id))))))]
         (dom/div
           (dom/text
-           (millis-to-date-format start)
+           (u/millis-to-date-format start)
            " ~ "
-           (millis-to-date-format end)))))))
+           (u/millis-to-date-format end)))))))
 
 (e/defn PushApp []
   (e/server
