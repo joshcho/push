@@ -71,6 +71,14 @@
      (comment
        (:task/interval
         (d/entity @!conn 26))
+
+       (defn delete-all-intervals [conn]
+         (let [intervals (d/q '[:find ?e
+                                :where
+                                [?e :task/interval]]
+                              @conn)]
+           (d/transact conn (mapv (fn [[e]] [:db/retract e :task/interval]) intervals))))
+       (delete-all-intervals !conn)
        ;; (tests
        ;;  (d/get-ancestor-task-ids @!conn 5) := [1 2]
        ;;  (set (d/get-descendant-task-ids @!conn 2)) := (set [4 5 7 8]))
@@ -126,7 +134,6 @@
         ]
     (ui/button
       (e/fn []
-        (js/console.log "Toggling " task-id)
         (e/server
          (tx/transact! !conn [{:db/id task-id
                                :task/toggled
@@ -186,7 +193,8 @@
                          ;; for disabling double-click
                          ;; (e/server (reset! !selected-id task-id))
                          (if (= selected-id task-id)
-                           (e/server (run-selected-task))
+                           (when-not (= selected-id running-id)
+                             (e/server (run-selected-task)))
                            (e/server (reset! !selected-id task-id))))
                        (dom/props {:class "w-full text-left flex"})
                        (dom/text task)
