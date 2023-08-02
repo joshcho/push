@@ -13,7 +13,9 @@
    [hyperfiddle.electric-ui4 :as ui]
    [hyperfiddle.electric-svg :as svg]
    [hyperfiddle.rcf :refer [tests]]
-   [contrib.str :refer [empty->nil]]))
+   [contrib.str :refer [empty->nil]]
+   ;; #?(:cljs d3)
+   ))
 
 #?(:clj
    (do
@@ -25,9 +27,10 @@
                                        :db/valueType   :db.type/ref}
                       :task/toggled   {}
                       ;; for datalevin, {:db/valueType :db.type/instant}
+                      ;; but not working rn
                       ;; for datascript, remove
-                      :interval/start {:db/valueType :db.type/instant}
-                      :interval/end   {:db/valueType :db.type/instant}
+                      :interval/start {}
+                      :interval/end   {}
                       })
      (defonce !conn
        ;; (d/create-conn schema)
