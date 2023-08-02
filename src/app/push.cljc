@@ -6,6 +6,7 @@
    #?(:clj [datalevin.core :as d])
    ;; #?(:clj [datascript.core :as d])
    [app.utils :as u]
+   [app.tailwind :refer [tw]]
    #?(:clj [app.tx :as tx])
    #?(:clj [app.db :as db])
    [hyperfiddle.electric :as e]
@@ -31,6 +32,7 @@
                       ;; for datascript, remove
                       :interval/start {}
                       :interval/end   {}
+                      :interval/notes {}
                       })
      (defonce !conn
        ;; (d/create-conn schema)
@@ -112,7 +114,7 @@
                                       false
                                       (:task/toggled (d/entity @!conn task-id))))}]))
         (reset! !temp-show-task-ids nil))
-      (dom/props {:class (u/tw "ml-1 btn-[* xs] w-fit px-1")})
+      (dom/props {:class (tw "ml-1 btn-[* xs] w-fit px-1")})
       (dom/on "click" (e/fn [e]
                         (.stopPropagation e)))
       (svg/svg (dom/props {:width  10
@@ -124,7 +126,7 @@
 (e/defn TaskActionButton [action text]
   (ui/button
     action
-    (dom/props {:class (u/tw "btn-[* xs]")})
+    (dom/props {:class (tw "btn-[* xs]")})
     (dom/on "click" (e/fn [e]
                       (.stopPropagation e)))
     (dom/text text)))
@@ -168,7 +170,7 @@
            edit-text
            (e/fn [v]
              (reset! !edit-text v))
-           (dom/props {:class (u/tw
+           (dom/props {:class (tw
                                "input-[* sm] absolute border-[black 2] mt-6 w-32")})
            (dom/on "click"
                    (e/fn [e]
@@ -199,7 +201,7 @@
           (dom/text "Day 5"))
         (ui/button
           (e/fn [] (swap! !editing not))
-          (dom/props {:class (u/tw "ml-2 btn-[* xs] mt-[1px] bg-base-100")})
+          (dom/props {:class (tw "ml-2 btn-[* xs] mt-[1px] bg-base-100")})
           (dom/on "click" (e/fn [e]
                             (.stopPropagation e)))
           (dom/text (if editing "stop editing" "edit"))))
@@ -217,10 +219,10 @@
                                     (sort (map :db/id (:task/subtask (d/entity db task-id)))))]
                    (dom/div
                      (dom/props
-                      {:class (u/tw "flex"
-                                    ;; don't use cond
-                                    (when (= task-id running-id)
-                                      "font-bold"))})
+                      {:class (tw "flex"
+                                  ;; don't use cond
+                                  (when (= task-id running-id)
+                                    "font-bold"))})
                      (ui/button
                        (e/fn []
                          ;; for disabling double-click
@@ -282,8 +284,8 @@
         !show-cutoff (atom false)
         show-cutoff  (e/watch !show-cutoff)]
     (dom/div
-      (dom/props {:class (u/tw "flex text-xs"
-                               "ml-[-6px] mt-[-3px]")})
+      (dom/props {:class (tw "flex text-xs"
+                             "ml-[-6px] mt-[-3px]")})
       (ui/button
         (e/fn []
           (swap! !show-cutoff not))
@@ -312,7 +314,7 @@
                   (dom/props {:class "mt-[1.5px]"})
                   (SelectTaskButton. bc-task-id
                                      {:class
-                                      (u/tw
+                                      (tw
                                        "hover:underline"
                                        (when (if (= selected-id running-id)
                                                is-last
@@ -358,7 +360,7 @@
            (if is-running
              (stop-running-task)
              (run-selected-task))))
-        (dom/props {:class (u/tw
+        (dom/props {:class (tw
                             "btn-[* xs] block bg-base-300 animation-none hover:bg-base-100")})
         (dom/text
          (if is-running "Stop" "Start")))
@@ -369,7 +371,7 @@
              (reset! !running-id nil)
              (reset! !running-start nil)
              (swap! !running-history drop-last)))
-          (dom/props {:class (u/tw
+          (dom/props {:class (tw
                               "btn-[* xs] block bg-base-300 animation-none hover:bg-base-100")})
           (dom/text "Cancel"))))))
 
@@ -391,20 +393,35 @@
             (dom/props {:class "mb-[5px]"})
             (RunButtons.))
           (SelectedStatus.)
-          (dom/div
-            (e/for [[start end] (e/server
-                                 (reverse
-                                  (sort-by
-                                   first
-                                   (map #(vector (:interval/start %)
-                                                 (:interval/end %))
-                                        (:task/interval (d/entity db selected-id))))))]
-              (dom/div
-                (dom/text
-                 (u/millis-to-date-format start)
-                 " ~ "
-                 (u/millis-to-date-format end)))))))
+          (letfn [(to-date [ms]
+                    (let [date    (js/Date. (+ ms (* 9 60 60 1000))) ; KST is UTC+9
+                          month   (.getUTCMonth date)
+                          day     (.getUTCDate date)
+                          hours   (.getUTCHours date)
+                          minutes (.getUTCMinutes date)]
+                      (str (inc month) "/" day " " hours ":" minutes)))]
+            (dom/div
+              (e/for [[start end] (e/server
+                                   (reverse
+                                    (sort-by
+                                     first
+                                     (map #(vector (:interval/start %)
+                                                   (:interval/end %))
+                                          (:task/interval (d/entity db selected-id))))))]
+                (dom/div
+                  (dom/text
+                   (to-date start)
+                   " ~ "
+                   (to-date end))))))))
       (dom/text "Select any task."))))
+
+(e/defn TestPanel []
+  (dom/div
+    (dom/props {:class "p-4 bg-base-200 rounded-lg"})
+    (dom/div
+      (dom/text "cbdc"))
+    (let [a 2]
+      (dom/text "abcd" a))))
 
 (e/defn PushApp []
   (e/server
@@ -412,6 +429,7 @@
      (e/client
       (dom/div
         (dom/props {:class "m-10 sm:flex h-fit min-w-[14rem]"})
-        (TasksPanel.)
-        (SelectedPanel.)
+        (TestPanel.)
+        ;; (TasksPanel.)
+        ;; (SelectedPanel.)
         )))))
