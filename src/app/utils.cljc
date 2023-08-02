@@ -105,7 +105,7 @@ space = #'\\s+'
 
 (defn tw [& args]
   (tailwind-compiler
-   (clojure.string/join " " args)))
+   (clojure.string/join " " (remove nil? args))))
 
 ;; {:nextjournal.clerk/visibility {:code :hide :result :hide}}
 

@@ -2,9 +2,9 @@
   (:import [hyperfiddle.electric Pending]
            #?(:clj [java.time Duration Instant]))
   (:require
-   ;; #?(:clj [datalevin.core :as d])
    ;; when you switch this, make sure to switch tx.clj and db.clj, too
-   #?(:clj [datascript.core :as d])
+   #?(:clj [datalevin.core :as d])
+   ;; #?(:clj [datascript.core :as d])
    [app.utils :as u]
    #?(:clj [app.tx :as tx])
    #?(:clj [app.db :as db])
@@ -25,12 +25,13 @@
                                        :db/valueType   :db.type/ref}
                       :task/toggled   {}
                       ;; for datalevin, {:db/valueType :db.type/instant}
-                      :interval/start {}
-                      :interval/end   {}
+                      ;; for datascript, remove
+                      :interval/start {:db/valueType :db.type/instant}
+                      :interval/end   {:db/valueType :db.type/instant}
                       })
      (defonce !conn
-       (d/create-conn schema)
-       ;; (d/get-conn "/tmp/datalevin/mygdbd" schema)
+       ;; (d/create-conn schema)
+       (d/get-conn "datalevin/db" schema)
        )
      (defonce !running-id (atom nil))
      (defonce !running-start (atom nil))
@@ -53,8 +54,7 @@
                                         :interval/start @!running-start
                                         :interval/end   now}}])
          (reset! !running-id nil)
-         (reset! !running-start nil))
-       )
+         (reset! !running-start nil)))
 
      (defn run-selected-task []
        ;; we can't use stop-running-task because we have to sync the start and end times
@@ -84,38 +84,6 @@
        ;; (tests
        ;;  (d/get-ancestor-task-ids @!conn 5) := [1 2]
        ;;  (set (d/get-descendant-task-ids @!conn 2)) := (set [4 5 7 8]))
-       )
-
-     (comment
-       (d/transact! !conn [{:db/id 1 :task/name "Software"}])
-       (d/transact! !conn [{:db/id 26 :task/name "Misc"}])
-       (d/transact! !conn [{:db/id 1 :task/subtask [{:db/id 2 :task/name "Push"}
-                                                    {:db/id 3 :task/name "Slix"}
-                                                    {:db/id 9 :task/name "Emacs Extension"}]}])
-       (d/transact! !conn [{:db/id 2 :task/subtask [{:db/id 4 :task/name "Learn Libraries"}
-                                                    {:db/id 5 :task/name "Code"}
-                                                    {:db/id 20 :task/name "Design"}
-                                                    {:db/id 22 :task/name "Think"}]}])
-       (d/transact! !conn [{:db/id 4 :task/subtask [{:db/id 8 :task/name "Electric"}
-                                                    {:db/id 7 :task/name "Missionary"}
-                                                    {:db/id 10 :task/name "Portfolio"}
-                                                    {:db/id 23 :task/name "Lexical"}]}])
-       (d/transact! !conn [{:db/id 5 :task/subtask [{:db/id 11 :task/name "Compose"}
-                                                    {:db/id 12 :task/name "Test"}
-                                                    {:db/id 13 :task/name
-                                                     "Refactor"}
-                                                    {:db/id 19 :task/name
-                                                     "Navigate"}
-                                                    {:db/id 27 :task/name
-                                                     "Debug"}]}])
-       (d/transact! !conn [{:db/id        14 :task/name "Break"
-                            :task/subtask [{:db/id 15 :task/name "Netflix"}
-                                           {:db/id 16 :task/name "YouTube"}
-                                           {:db/id 17 :task/name "Free Break"}]}])
-       (d/transact! !conn [{:db/id 1 :task/subtask [{:db/id 18 :task/name "Cursory Look"}]}])
-       (d/transact! !conn [{:db/id 20 :task/subtask [{:db/id 21 :task/name "Introspectively"}]}])
-       (d/transact! !conn [{:db/id 22 :task/subtask [{:db/id 24 :task/name "Think about how to incorporate Lexical"}
-                                                     {:db/id 25 :task/name "Philosophically"}]}])
        )))
 
 (e/defn SVGHorizontalLine []
@@ -215,15 +183,22 @@
 (e/defn TasksPanel []
   (dom/div
     (dom/props {:class "grow sm:max-w-xs min-h-[14rem] sm:min-h-[18rem] min-h-full sm:h-none mb-2 sm:mb-0 p-2 rounded bg-base-200"})
+    (dom/on "click"
+            (e/fn [e]
+              (e/server (reset! !selected-id nil))))
     (let [!editing (atom false), editing (e/watch !editing)]
       (dom/div
         (dom/props {:class "text-xl font-bold flex items-center"})
         (ui/button
           (e/fn [] (e/server (reset! !selected-id running-id)))
+          (dom/on "click" (e/fn [e]
+                            (.stopPropagation e)))
           (dom/text "Day 5"))
         (ui/button
           (e/fn [] (swap! !editing not))
           (dom/props {:class (u/tw "ml-2 btn-[* xs] mt-[1px] bg-base-100")})
+          (dom/on "click" (e/fn [e]
+                            (.stopPropagation e)))
           (dom/text (if editing "stop editing" "edit"))))
       (dom/div
         (binding
@@ -251,7 +226,10 @@
                            (when-not (= selected-id running-id)
                              (e/server (run-selected-task)))
                            (e/server (reset! !selected-id task-id))))
-                       (dom/props {:class "w-full text-left flex"})
+                       (dom/props {:class "text-left flex"})
+                       (dom/on "click"
+                               (e/fn [e]
+                                 (.stopPropagation e)))
                        (dom/div
                          (dom/props {:class (when (= task-id selected-id)
                                               "underline")})
@@ -277,6 +255,7 @@
                                              (d/entity db task-id))))
                                      "hidden")})
                        (TaskList. subtask-ids))))))]
+          (dom/props {:class "mt-[2px]"})
           (TaskList. (e/server (db/get-root-task-ids db))))))))
 
 (e/defn SelectTaskButton [target-id props]
@@ -305,7 +284,7 @@
       (ui/button
         (e/fn []
           (swap! !show-cutoff not))
-        (dom/props {:class "w-3 mt-[-6.5px] font-bold"})
+        (dom/props {:class "w-3 font-bold mt-[-6.5px] h-6"})
         (dom/text "."))
       (dom/div
         (dom/props {:class "ml-[1px] mt-[-10px] mb-[-8px] text-xs breadcrumbs"})
@@ -385,7 +364,8 @@
           (e/fn []
             (e/server
              (reset! !running-id nil)
-             (reset! !running-start nil)))
+             (reset! !running-start nil)
+             (swap! !running-history drop-last)))
           (dom/props {:class (u/tw
                               "btn-[* xs] block bg-base-300 animation-none hover:bg-base-100")})
           (dom/text "Cancel"))))))

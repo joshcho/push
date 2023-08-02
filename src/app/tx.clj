@@ -1,6 +1,8 @@
 (ns app.tx
   (:require
-   [datascript.core :as d]))
+   [datalevin.core :as d]
+   ;; [datascript.core :as d]
+   ))
 
 (defn transact!
   "Equivalent to d/transact! but for use in hyperfiddle.electric/server blocks."
