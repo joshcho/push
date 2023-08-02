@@ -141,7 +141,7 @@
                                       false
                                       (:task/toggled (d/entity @!conn task-id))))}]))
         (reset! !temp-show-task-ids nil))
-      (dom/props {:class "ml-1 btn btn-xs w-fit px-1"})
+      (dom/props {:class (u/tw "ml-1 btn-[* xs] w-fit px-1")})
       (dom/on "click" (e/fn [e]
                         (.stopPropagation e)))
       (svg/svg (dom/props {:width  10
@@ -153,7 +153,7 @@
 (e/defn TaskActionButton [action text]
   (ui/button
     action
-    (dom/props {:class "btn btn-xs "})
+    (dom/props {:class (u/tw "btn-[* xs]")})
     (dom/on "click" (e/fn [e]
                       (.stopPropagation e)))
     (dom/text text)))
@@ -171,8 +171,12 @@
      "Add")
     (TaskActionButton.
      (e/fn []
-       (e/server
-        (tx/transact! !conn [[:db.fn/retractEntity task-id]])))
+       (when (and (not (e/server (:task/subtask (d/entity db task-id))))
+                  (not (= task-id running-id)))
+         (e/server
+          (tx/transact! !conn [[:db.fn/retractEntity task-id]]))
+         (when (= task-id selected-id)
+           (e/server (reset! !selected-id nil)))))
      "Del")
     (let [!edit-text (atom nil),
           edit-text  (e/watch !edit-text)]
@@ -186,22 +190,23 @@
                (reset! !edit-text nil))
              (reset! !edit-text (e/server (:task/name (d/entity db task-id))))))
          (if edit-text
-           "Confirm Edit"
+           "Confirm"
            "Edit"))
         (when edit-text
           (ui/input
            edit-text
            (e/fn [v]
              (reset! !edit-text v))
-           (dom/props {:class "input input-sm absolute border-black border-2 mt-6 w-32"})
+           (dom/props {:class (u/tw
+                               "input-[* sm] absolute border-[black 2] mt-6 w-32")})
            (dom/on "click"
                    (e/fn [e]
                      (.stopPropagation e)))
            (dom/on "keydown"
                    (e/fn [e]
+                     (.stopPropagation e)
                      (when (u/in? ["Enter" "Escape"] (.-key e))
                        (.preventDefault e)
-                       (.stopPropagation e)
                        (e/server (tx/transact!
                                   !conn [{:db/id task-id :task/name edit-text}]))
                        (reset! !edit-text nil))))))))))
@@ -218,7 +223,7 @@
           (dom/text "Day 5"))
         (ui/button
           (e/fn [] (swap! !editing not))
-          (dom/props {:class "ml-2 btn mt-[1px] btn-xs bg-base-100"})
+          (dom/props {:class (u/tw "ml-2 btn-[* xs] mt-[1px] bg-base-100")})
           (dom/text (if editing "stop editing" "edit"))))
       (dom/div
         (binding
@@ -234,10 +239,10 @@
                                     (sort (map :db/id (:task/subtask (d/entity db task-id)))))]
                    (dom/div
                      (dom/props
-                      {:class (str "flex "
-                                   ;; don't use cond
-                                   (when (= task-id running-id)
-                                     "font-bold "))})
+                      {:class (u/tw "flex"
+                                    ;; don't use cond
+                                    (when (= task-id running-id)
+                                      "font-bold"))})
                      (ui/button
                        (e/fn []
                          ;; for disabling double-click
@@ -249,17 +254,17 @@
                        (dom/props {:class "w-full text-left flex"})
                        (dom/div
                          (dom/props {:class (when (= task-id selected-id)
-                                              "underline ")})
+                                              "underline")})
                          (dom/text task))
                        (dom/div
                          (dom/props {:class (when-not (and (seq subtask-ids)
                                                            (not editing))
                                               "hidden")})
-                         (Toggle. task-id))
-                       (dom/div
-                         (dom/props {:class (when-not editing
-                                              "hidden")})
-                         (TaskActionButtons. task-id))))
+                         (Toggle. task-id)))
+                     (dom/div
+                       (dom/props {:class (when-not editing
+                                            "hidden")})
+                       (TaskActionButtons. task-id)))
                    (dom/div
                      (dom/props {:class "ml-2"})
                      (dom/div
@@ -295,8 +300,8 @@
         !show-cutoff (atom false)
         show-cutoff  (e/watch !show-cutoff)]
     (dom/div
-      (dom/props {:class (str "flex text-xs "
-                              "ml-[-6px] mt-[-3px]")})
+      (dom/props {:class (u/tw "flex text-xs"
+                               "ml-[-6px] mt-[-3px]")})
       (ui/button
         (e/fn []
           (swap! !show-cutoff not))
@@ -325,8 +330,8 @@
                   (dom/props {:class "mt-[1.5px]"})
                   (SelectTaskButton. bc-task-id
                                      {:class
-                                      (str
-                                       "hover:underline "
+                                      (u/tw
+                                       "hover:underline"
                                        (when (if (= selected-id running-id)
                                                is-last
                                                (= selected-id bc-task-id))
@@ -361,17 +366,29 @@
               (SelectTaskButton. running-id
                                  {:class "text-xs italic"}))))))
 
-(e/defn RunButton []
+(e/defn RunButtons []
   (let [is-running (= running-id selected-id)]
-    (ui/button
-      (e/fn []
-        (e/server
-         (if is-running
-           (stop-running-task)
-           (run-selected-task))))
-      (dom/props {:class "btn btn-xs block bg-base-300 animation-none hover:bg-base-100"})
-      (dom/text
-       (if is-running "Stop" "Start")))))
+    (dom/div
+      (dom/props {:class "flex gap-2"})
+      (ui/button
+        (e/fn []
+          (e/server
+           (if is-running
+             (stop-running-task)
+             (run-selected-task))))
+        (dom/props {:class (u/tw
+                            "btn-[* xs] block bg-base-300 animation-none hover:bg-base-100")})
+        (dom/text
+         (if is-running "Stop" "Start")))
+      (when is-running
+        (ui/button
+          (e/fn []
+            (e/server
+             (reset! !running-id nil)
+             (reset! !running-start nil)))
+          (dom/props {:class (u/tw
+                              "btn-[* xs] block bg-base-300 animation-none hover:bg-base-100")})
+          (dom/text "Cancel"))))))
 
 (e/defn SelectedPanel []
   (dom/div
@@ -389,7 +406,7 @@
           (dom/props {:class "ml-2 mt-[1px]"})
           (dom/div
             (dom/props {:class "mb-[5px]"})
-            (RunButton.))
+            (RunButtons.))
           (SelectedStatus.)
           (dom/div
             (e/for [[start end] (e/server
@@ -412,6 +429,6 @@
      (e/client
       (dom/div
         (dom/props {:class "m-10 sm:flex h-fit min-w-[14rem]"})
-        ;; (dom/text temp-show-task-ids)
         (TasksPanel.)
-        (SelectedPanel.))))))
+        (SelectedPanel.)
+        )))))
