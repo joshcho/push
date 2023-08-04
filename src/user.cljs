@@ -10,7 +10,7 @@
    app.reactive-render
    ;; app.temperature-converter
    hyperfiddle.electric
-   hyperfiddle.electric-dom2))
+   [hyperfiddle.electric-dom2 :as dom]))
 
 #_(def electric-main
     (hyperfiddle.electric/boot ; Electric macroexpansion - Clojure to signals compiler

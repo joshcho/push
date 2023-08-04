@@ -25,7 +25,7 @@
 (comment
   (main)                       ; Electric Clojure(JVM) REPL entrypoint
   (clerk/serve! {:watch-paths    ["src"]
-                 :show-filter-fn (partial = "src/app/utils.cljc")})
+                 :show-filter-fn (partial = "src/app/reactive_render.cljc")})
   (hyperfiddle.rcf/enable!) ; turn on RCF after all transitive deps have loaded
   (shadow.cljs.devtools.api/repl :dev) ; shadow server hosts the cljs repl
                                         ; connect a second REPL instance to it

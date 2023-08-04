@@ -17,7 +17,9 @@
   lambdaisland/regal                                  {:mvn/version "0.0.143"}
   instaparse/instaparse                               {:mvn/version "1.4.12"}
   io.github.nextjournal/clerk                         {:mvn/version "0.14.919"}
-  ;; org.mentat/clerk-utils                              {:mvn/version "0.6.0"}
+  org.mentat/clerk-utils                              {:mvn/version "0.6.0"}
+  org.babashka/sci                                    {:mvn/version "0.8.40"} ; for zp
+  zprint/zprint                                       {:mvn/version "1.2.7"}
   }
  :aliases {:dev
            {:extra-deps

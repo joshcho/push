@@ -429,7 +429,7 @@
      (e/client
       (dom/div
         (dom/props {:class "m-10 sm:flex h-fit min-w-[14rem]"})
-        (TestPanel.)
-        ;; (TasksPanel.)
-        ;; (SelectedPanel.)
+        ;; (TestPanel.)
+        (TasksPanel.)
+        (SelectedPanel.)
         )))))
