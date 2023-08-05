@@ -1,6 +1,6 @@
 (ns app.tailwind
   (:require
-   [app.utils :as u]
+   [app.utils :refer [subs*]]           ; safe subs with negative indices
    [clojure.string]
    [instaparse.core :as insta]))
 
@@ -25,8 +25,8 @@ space = #'\\s+'
   (fn [& args]
     (f args)))
 
-(def tailwind-valid-group-prefixes
-  ["border" "grid" "flex" "input" "btn" "font" "text"])
+(def tailwind-valid-dash-group-prefixes
+  ["border" "grid" "flex" "input" "btn" "font" "text" "range" "input"])
 (defn tailwind-generator [tree]
   (->> tree
        (insta/transform
@@ -51,7 +51,7 @@ space = #'\\s+'
                                              ".*("
                                              (clojure.string/join
                                               "|"
-                                              tailwind-valid-group-prefixes)
+                                              tailwind-valid-dash-group-prefixes)
                                              ")-$"))
                                            prefix)))
                                   (str prefix "[" (first subitems) "]")
@@ -59,7 +59,7 @@ space = #'\\s+'
                                    " "
                                    (concat
                                     (when contains-itself
-                                      (list (u/subs* prefix 0 -1)))
+                                      (list (subs* prefix 0 -1)))
                                     (map (fn [subitem]
                                            (str prefix
                                                 subitem))
