@@ -3,11 +3,11 @@
    ;; app.todo-list
    ;; app.fibonacci-demo
    app.push
-   app.scenes
-   app.recursion
-   app.experiment
-   app.demo-todos-advanced
-   app.reactive-render
+   ;; app.scenes
+   ;; app.recursion
+   ;; app.experiment
+   ;; app.demo-todos-advanced
+   ;; app.reactive-render
    ;; app.temperature-converter
    hyperfiddle.electric
    [hyperfiddle.electric-dom2 :as dom]))
@@ -22,8 +22,8 @@
      ;; (app.fibonacci-demo/FibonacciApp.)
      ;; (app.temperature-converter/TemperatureConverter.)
      ;; (app.scenes/ScenesApp.)
-     ;; (app.push/PushApp.)
-     (app.reactive-render/ReactiveRenderApp.)
+     (app.push/PushApp.)
+     ;; (app.reactive-render/ReactiveRenderApp.)
      ;; (app.experiment/ExperimentApp.)
      ;; (app.experiment/App.)
 

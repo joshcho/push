@@ -10,8 +10,8 @@
    [hyperfiddle.electric :as e]
    [hyperfiddle.electric-dom2 :as dom]
    ;; #?(:clj nextjournal.clerk)
-   #?(:cljs
-      [app.render])
+   ;; #?(:cljs
+   ;;    [app.render])
    ))
 
 ;; {:nextjournal.clerk/visibility {:code :hide :result :hide}}
