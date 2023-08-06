@@ -1,6 +1,7 @@
 (ns app.push
   (:import [hyperfiddle.electric Pending]
            #?(:clj [java.time Duration Instant]))
+  #?(:cljs (:require-macros [app.push :refer [make-relay]]))
   (:require
    ;; when you switch this, make sure to switch tx.clj and db.clj, too
    #?(:clj [datalevin.core :as d])
@@ -14,6 +15,7 @@
    [hyperfiddle.electric-ui4 :as ui]
    [hyperfiddle.electric-svg :as svg]
    [hyperfiddle.rcf :refer [tests]]
+   [missionary.core :as m]
    [contrib.str :refer [empty->nil]]
    ;; #?(:cljs d3)
    ))
@@ -38,16 +40,36 @@
        ;; (d/create-conn schema)
        (d/get-conn "datalevin/db" schema)
        )
+     ;; use relay
      (defonce !running-id (atom nil))
      (defonce !running-start (atom nil))
+
+     (defonce !running-history (u/make-history-atom !running-id))
+     (def delay 0))
+   :cljs
+   (do
      (defonce !selected-id (atom nil))
-     (defonce !running-history (u/make-history-atom !running-id))))
+     (defonce !temp-show-task-ids (atom nil))))
 (e/def db)
 (e/def running-id (e/server (e/watch !running-id)))
 (e/def running-start (e/server (e/watch !running-start)))
-(e/def selected-id (e/server (e/watch !selected-id)))
-#?(:cljs (defonce !temp-show-task-ids (atom nil)))
+(e/def selected-id (e/client (e/watch !selected-id)))
 (e/def temp-show-task-ids (e/client (e/watch !temp-show-task-ids)))
+
+(e/defn run-selected-task []
+  ;; we can't use stop-running-task because we have to sync the start and end times
+  ;; much like compare-and-swap
+  (e/server
+   (let [now (System/currentTimeMillis)]
+     (when @!running-id
+       (d/transact! !conn
+                    [{:db/id         @!running-id
+                      :task/interval {:db/id          -1
+                                      :interval/start @!running-start
+                                      :interval/end   now}}]))
+     (Thread/sleep delay)
+     (reset! !running-id (e/client @!selected-id))
+     (reset! !running-start now))))
 
 #?(:clj
    (do
@@ -60,19 +82,6 @@
                                         :interval/end   now}}])
          (reset! !running-id nil)
          (reset! !running-start nil)))
-
-     (defn run-selected-task []
-       ;; we can't use stop-running-task because we have to sync the start and end times
-       ;; much like compare-and-swap
-       (let [now (System/currentTimeMillis)]
-         (when @!running-id
-           (d/transact! !conn
-                        [{:db/id         @!running-id
-                          :task/interval {:db/id          -1
-                                          :interval/start @!running-start
-                                          :interval/end   now}}]))
-         (reset! !running-id @!selected-id)
-         (reset! !running-start now)))
 
      (comment
        (:task/interval
@@ -100,23 +109,20 @@
                         :y1     0.2,     :y2           9.8
                         :stroke "black", :stroke-width 1})))
 
-(e/defn Toggle [task-id]
-  (let [toggled (if (u/in? temp-show-task-ids task-id)
-                  false
-                  (e/server (:task/toggled (d/entity db task-id))))]
+(e/defn Toggle [task-id !toggled]
+  (let [toggled (e/watch !toggled)]
     (ui/button
       (e/fn []
+        (swap! !toggled not)
         (e/server
-         (tx/transact! !conn [{:db/id task-id
-                               :task/toggled
-                               (not (if (some #(= % task-id) (e/client
-                                                              @!temp-show-task-ids))
-                                      false
-                                      (:task/toggled (d/entity @!conn task-id))))}]))
-        (reset! !temp-show-task-ids nil))
+         (Thread/sleep delay))
+        ;; (reset! !temp-show-task-ids nil)
+        )
       (dom/props {:class (tw "ml-1 btn-[* xs] w-fit px-1")})
       (dom/on "click" (e/fn [e]
                         (.stopPropagation e)))
+      ;; (dom/text (str @!last-toggled))
+      ;; (dom/text (str server-toggled))
       (svg/svg (dom/props {:width  10
                            :height 10})
                (when toggled
@@ -149,7 +155,7 @@
          (e/server
           (tx/transact! !conn [[:db.fn/retractEntity task-id]]))
          (when (= task-id selected-id)
-           (e/server (reset! !selected-id nil)))))
+           (reset! !selected-id nil))))
      "Del")
     (let [!edit-text (atom nil),
           edit-text  (e/watch !edit-text)]
@@ -184,18 +190,38 @@
                                   !conn [{:db/id task-id :task/name edit-text}]))
                        (reset! !edit-text nil))))))))))
 
+#?(:clj
+   (defmacro make-relay
+     "Make `ref` into a client-side relay atom. The relay atom does bidirectional updates with the server, indicated by server-value (the flow) and server-effect (the client to server update). The server to client update is a `reset!`."
+     [ref server-value server-effect]
+     `(let [!client-value ~ref]
+        (reset! !client-value (e/snapshot (e/server ~server-value)))
+        ;; sync from client to server
+        (let [client-value (e/watch !client-value)]
+          (when (boolean? client-value)
+            (e/server (~server-effect client-value))))
+        ;; sync from server to client
+        (let [server-value (e/server ~server-value)]
+          (when (boolean? server-value)
+            (reset! !client-value server-value))))))
+
+;; (macroexpand-1 '(server-relay-atom
+;;                  (:task/toggled (d/entity db task-id))
+;;                  (fn [v]
+;;                    (tx/transact!
+;;                     !conn [{:db/id task-id :task/toggled v}]))))
 (e/def TaskList)
 (e/defn TasksPanel []
   (dom/div
     (dom/props {:class "grow sm:max-w-xs min-h-[14rem] sm:min-h-[18rem] min-h-full sm:h-none mb-2 sm:mb-0 p-2 rounded bg-base-200"})
     (dom/on "click"
             (e/fn [e]
-              (e/server (reset! !selected-id nil))))
+              (reset! !selected-id nil)))
     (let [!editing (atom false), editing (e/watch !editing)]
       (dom/div
         (dom/props {:class "text-xl font-bold flex items-center"})
         (ui/button
-          (e/fn [] (e/server (reset! !selected-id running-id)))
+          (e/fn [] (reset! !selected-id running-id))
           (dom/on "click" (e/fn [e]
                             (.stopPropagation e)))
           (dom/text "Day 5"))
@@ -216,21 +242,25 @@
                  (let [task        (e/server
                                     (:task/name (d/entity db task-id)))
                        subtask-ids (e/server
-                                    (sort (map :db/id (:task/subtask (d/entity db task-id)))))]
+                                    (sort (map :db/id (:task/subtask (d/entity db task-id)))))
+                       !toggled    (atom nil)]
+                   (make-relay !toggled
+                               (:task/toggled (d/entity db task-id))
+                               (fn [v]
+                                 (tx/transact!
+                                  !conn [{:db/id task-id :task/toggled v}])))
                    (dom/div
                      (dom/props
-                      {:class (tw "flex"
-                                  ;; don't use cond
-                                  (when (= task-id running-id)
-                                    "font-bold"))})
+                      {:class (str "flex "
+                                   (when (= task-id running-id)
+                                     "font-bold"))})
                      (ui/button
                        (e/fn []
                          ;; for disabling double-click
-                         ;; (e/server (reset! !selected-id task-id))
                          (if (= selected-id task-id)
                            (when-not (= selected-id running-id)
-                             (e/server (run-selected-task)))
-                           (e/server (reset! !selected-id task-id))))
+                             (run-selected-task.))
+                           (reset! !selected-id task-id)))
                        (dom/props {:class "text-left flex"})
                        (dom/on "click"
                                (e/fn [e]
@@ -243,7 +273,7 @@
                          (dom/props {:class (when-not (and (seq subtask-ids)
                                                            (not editing))
                                               "hidden")})
-                         (Toggle. task-id)))
+                         (Toggle. task-id !toggled)))
                      (dom/div
                        (dom/props {:class (when-not editing
                                             "hidden")})
@@ -252,12 +282,7 @@
                      (dom/props {:class "ml-2"})
                      (dom/div
                        (dom/props {:class
-                                   (when (if (u/in? temp-show-task-ids
-                                                    task-id)
-                                           false
-                                           (e/server
-                                            (:task/toggled
-                                             (d/entity db task-id))))
+                                   (when (e/watch !toggled)
                                      "hidden")})
                        (TaskList. subtask-ids))))))]
           (dom/props {:class "mt-[2px]"})
@@ -266,8 +291,7 @@
 (e/defn SelectTaskButton [target-id props]
   (ui/button
     (e/fn []
-      (e/server
-       (reset! !selected-id target-id))
+      (reset! !selected-id target-id)
       (doseq [ancestor-task-id (e/server (db/get-ancestor-task-ids db target-id))]
         (e/server
          (tx/transact! !conn [{:db/id        ancestor-task-id
@@ -314,12 +338,12 @@
                   (dom/props {:class "mt-[1.5px]"})
                   (SelectTaskButton. bc-task-id
                                      {:class
-                                      (tw
+                                      (str
                                        "hover:underline"
                                        (when (if (= selected-id running-id)
                                                is-last
                                                (= selected-id bc-task-id))
-                                         "underline"))}))))))))))
+                                         " underline"))}))))))))))
 
 (e/defn SelectedStatus []
   (let [ancestor-task-ids   (e/server (db/get-ancestor-task-ids db running-id))

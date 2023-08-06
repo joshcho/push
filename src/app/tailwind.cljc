@@ -1,6 +1,7 @@
 (ns app.tailwind
+  #?(:cljs (:require-macros [app.tailwind :refer [tw]]))
   (:require
-   [app.utils :refer [subs*]]           ; safe subs with negative indices
+   [app.utils :refer [subs*]]        ; safe subs with negative indices
    [clojure.string]
    [instaparse.core :as insta]))
 
@@ -80,6 +81,7 @@ space = #'\\s+'
   (tailwind-compiler "grid-[]")
   (tailwind-compiler "hover:[]"))
 
-(defn tw [& args]
-  (tailwind-compiler
-   (clojure.string/join " " (remove nil? args))))
+#?(:clj
+   (defmacro tw [& args]
+     (tailwind-compiler
+      (clojure.string/join " " (remove nil? args)))))
