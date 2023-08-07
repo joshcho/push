@@ -45,16 +45,13 @@
      (defonce !running-start (atom nil))
 
      (defonce !running-history (u/make-history-atom !running-id))
-     (def delay 0))
-   :cljs
-   (do
-     (defonce !selected-id (atom nil))
-     (defonce !temp-show-task-ids (atom nil))))
+     (def delay 0)))
 (e/def db)
 (e/def running-id (e/server (e/watch !running-id)))
 (e/def running-start (e/server (e/watch !running-start)))
 (e/def selected-id (e/client (e/watch !selected-id)))
-(e/def temp-show-task-ids (e/client (e/watch !temp-show-task-ids)))
+#?(:cljs
+   (e/def !selected-id (atom (e/snapshot (e/server @!running-id)))))
 
 (e/defn run-selected-task []
   ;; we can't use stop-running-task because we have to sync the start and end times
@@ -115,14 +112,10 @@
       (e/fn []
         (swap! !toggled not)
         (e/server
-         (Thread/sleep delay))
-        ;; (reset! !temp-show-task-ids nil)
-        )
+         (Thread/sleep delay)))
       (dom/props {:class (tw "ml-1 btn-[* xs] w-fit px-1")})
       (dom/on "click" (e/fn [e]
                         (.stopPropagation e)))
-      ;; (dom/text (str @!last-toggled))
-      ;; (dom/text (str server-toggled))
       (svg/svg (dom/props {:width  10
                            :height 10})
                (when toggled
@@ -251,9 +244,9 @@
                                   !conn [{:db/id task-id :task/toggled v}])))
                    (dom/div
                      (dom/props
-                      {:class (str "flex "
-                                   (when (= task-id running-id)
-                                     "font-bold"))})
+                      {:class (tw "flex"
+                                  (when (= task-id running-id)
+                                    "font-bold"))})
                      (ui/button
                        (e/fn []
                          ;; for disabling double-click
@@ -295,9 +288,7 @@
       (doseq [ancestor-task-id (e/server (db/get-ancestor-task-ids db target-id))]
         (e/server
          (tx/transact! !conn [{:db/id        ancestor-task-id
-                               :task/toggled false}])))
-      ;; (reset! !temp-show-task-ids (e/server (db/get-ancestor-task-ids db target-id)))
-      )
+                               :task/toggled false}]))))
     (dom/props props)
     (dom/text
      (e/server (:task/name (d/entity db target-id))))))

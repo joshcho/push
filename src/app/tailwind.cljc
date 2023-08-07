@@ -82,6 +82,14 @@ space = #'\\s+'
   (tailwind-compiler "hover:[]"))
 
 #?(:clj
-   (defmacro tw [& args]
-     (tailwind-compiler
-      (clojure.string/join " " (remove nil? args)))))
+   (defmacro tw
+     "Output a tailwind class string, using `tailwind-compiler`. If args are strings, then parsed at compile-time. Otherwise, parsed at run-time."
+     [& args]
+     `(clojure.string/join
+       " "
+       (list
+        ~@(map (fn [arg]
+                 (if (string? arg)
+                   (tailwind-compiler arg)
+                   `(tailwind-compiler ~arg)))
+               args)))))
