@@ -1,7 +1,7 @@
 (ns app.push
+  #?(:cljs (:require-macros [app.push :refer [make-relay]]))
   (:import [hyperfiddle.electric Pending]
            #?(:clj [java.time Duration Instant]))
-  #?(:cljs (:require-macros [app.push :refer [make-relay]]))
   (:require
    ;; when you switch this, make sure to switch tx.clj and db.clj, too
    #?(:clj [datalevin.core :as d])
@@ -19,6 +19,21 @@
    [contrib.str :refer [empty->nil]]
    ;; #?(:cljs d3)
    ))
+
+#?(:clj
+   (defmacro make-relay
+     "Make `ref` into a client-side relay atom. The relay atom does bidirectional updates with the server, indicated by server-value (the flow) and server-effect (the client to server update). The server to client update is a `reset!`."
+     [ref server-value server-effect pred]
+     `(let [!client-value ~ref]
+        (reset! !client-value (e/snapshot (e/server ~server-value)))
+        ;; sync from client to server
+        (let [client-value (e/watch !client-value)]
+          (when (~pred client-value)
+            (e/server (~server-effect client-value))))
+        ;; sync from server to client
+        (let [server-value (e/server ~server-value)]
+          (when (~pred server-value)
+            (reset! !client-value server-value))))))
 
 #?(:clj
    (do
@@ -43,19 +58,15 @@
      (defonce !running-id (atom nil))
      (defonce !running-start (atom nil))
      (defonce !running-notes-server (atom ""))
-
      (defonce !running-history (u/make-history-atom !running-id))
      (def delay 0)))
 
-#?(:cljs
-   (do
-     (e/def !running-notes (atom nil))
-     ;; see down below for what happens exactly
-     ))
+(defonce !running-notes (atom nil))
+
 (e/def db)
 (e/def running-id (e/server (e/watch !running-id)))
 (e/def running-start (e/server (e/watch !running-start)))
-(e/def running-notes (e/watch !running-notes))
+(e/def running-notes (e/client (e/watch !running-notes)))
 (e/def selected-id (e/client (e/watch !selected-id)))
 #?(:cljs
    (e/def !selected-id (atom (e/snapshot (e/server @!running-id)))))
@@ -71,7 +82,8 @@
                       :task/interval {:db/id          -1
                                       :interval/start @!running-start
                                       :interval/end   now
-                                      :interval/notes @!running-notes}}]))
+                                      ;; :interval/notes (e/client @!running-notes)
+                                      }}]))
      (Thread/sleep delay)
      (reset! !running-id (e/client @!selected-id))
      (reset! !running-start now)
@@ -203,21 +215,6 @@
                            (e/server (tx/transact!
                                       !conn [{:db/id task-id :task/name edit-text}]))
                            (reset! !edit-text nil))))))))))))
-
-#?(:clj
-   (defmacro make-relay
-     "Make `ref` into a client-side relay atom. The relay atom does bidirectional updates with the server, indicated by server-value (the flow) and server-effect (the client to server update). The server to client update is a `reset!`."
-     [ref server-value server-effect pred]
-     `(let [!client-value ~ref]
-        (reset! !client-value (e/snapshot (e/server ~server-value)))
-        ;; sync from client to server
-        (let [client-value (e/watch !client-value)]
-          (when (~pred client-value)
-            (e/server (~server-effect client-value))))
-        ;; sync from server to client
-        (let [server-value (e/server ~server-value)]
-          (when (~pred server-value)
-            (reset! !client-value server-value))))))
 
 ;; (macroexpand-1 '(server-relay-atom
 ;;                  (:task/toggled (d/entity db task-id))
