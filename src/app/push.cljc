@@ -472,7 +472,7 @@
            (e/fn [v]
              (e/server (reset! !running-notes v)))
            (dom/style {:background-color "bg-base-200"})
-           (dom/props {:class (tw "textarea-[* md primary] text-md mt-2 w-full max-w-lg h-96"
+           (dom/props {:class (tw "textarea-[* md primary] text-lg mt-2 w-full max-w-lg h-[500px] focus:outline-none"
                                   (when-not (= selected-id running-id)
                                     "hidden"))}))))
       (dom/text "Select any task."))))
