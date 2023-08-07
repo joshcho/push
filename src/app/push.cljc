@@ -1,5 +1,5 @@
 (ns app.push
-  #?(:cljs (:require-macros [app.push :refer [make-relay]]))
+  #?(:cljs (:require-macros [app.push :refer [make-relay textarea*]]))
   (:import [hyperfiddle.electric Pending]
            #?(:clj [java.time Duration Instant]))
   (:require
@@ -19,21 +19,6 @@
    [contrib.str :refer [empty->nil]]
    ;; #?(:cljs d3)
    ))
-
-#?(:clj
-   (defmacro make-relay
-     "Make `ref` into a client-side relay atom. The relay atom does bidirectional updates with the server, indicated by server-value (the flow) and server-effect (the client to server update). The server to client update is a `reset!`."
-     [ref server-value server-effect pred]
-     `(let [!client-value ~ref]
-        (reset! !client-value (e/snapshot (e/server ~server-value)))
-        ;; sync from client to server
-        (let [client-value (e/watch !client-value)]
-          (when (~pred client-value)
-            (e/server (~server-effect client-value))))
-        ;; sync from server to client
-        (let [server-value (e/server ~server-value)]
-          (when (~pred server-value)
-            (reset! !client-value server-value))))))
 
 #?(:clj
    (do
@@ -57,21 +42,34 @@
      ;; use relay
      (defonce !running-id (atom nil))
      (defonce !running-start (atom nil))
-     (defonce !running-notes-server (atom ""))
+     (defonce !running-notes (atom ""))
      (defonce !running-history (u/make-history-atom !running-id))
-     (def delay 0)))
+     (def delay-amount 0)))
 
-(defonce !running-notes (atom nil))
+#?(:clj
+   (defmacro make-relay
+     "Make `ref` into a client-side relay atom. The relay atom does bidirectional updates with the server, indicated by server-value (the flow) and server-effect (the client to server update). The server to client update is a `reset!`."
+     [ref server-value server-effect pred]
+     `(let [!client-value ~ref]
+        (reset! !client-value (e/snapshot (e/server ~server-value)))
+        ;; sync from client to server
+        (let [client-value (e/watch !client-value)]
+          (when (~pred client-value)
+            (e/server (~server-effect client-value))))
+        ;; sync from server to client
+        (let [server-value (e/server ~server-value)]
+          (when (~pred server-value)
+            (reset! !client-value server-value))))))
 
 (e/def db)
 (e/def running-id (e/server (e/watch !running-id)))
 (e/def running-start (e/server (e/watch !running-start)))
-(e/def running-notes (e/client (e/watch !running-notes)))
+(e/def running-notes (e/server (e/watch !running-notes)))
 (e/def selected-id (e/client (e/watch !selected-id)))
 #?(:cljs
    (e/def !selected-id (atom (e/snapshot (e/server @!running-id)))))
 
-(e/defn run-selected-task []
+(e/defn RunSelectedTask []
   ;; we can't use stop-running-task because we have to sync the start and end times
   ;; much like compare-and-swap
   (e/server
@@ -84,7 +82,7 @@
                                       :interval/end   now
                                       ;; :interval/notes (e/client @!running-notes)
                                       }}]))
-     (Thread/sleep delay)
+     (Thread/sleep delay-amount)
      (reset! !running-id (e/client @!selected-id))
      (reset! !running-start now)
      (reset! !running-notes ""))))
@@ -132,9 +130,7 @@
   (let [toggled (e/watch !toggled)]
     (ui/button
       (e/fn []
-        (swap! !toggled not)
-        (e/server
-         (Thread/sleep delay)))
+        (swap! !toggled not))
       (dom/props {:class (tw "ml-1 btn-[* xs] w-fit px-1")})
       (dom/on "click" (e/fn [e]
                         (.stopPropagation e)))
@@ -211,7 +207,6 @@
                              (reset! !selected-id nil)))
                          ;; edit
                          (do
-                           (js/console.log "HEY")
                            (e/server (tx/transact!
                                       !conn [{:db/id task-id :task/name edit-text}]))
                            (reset! !edit-text nil))))))))))))
@@ -271,7 +266,7 @@
                          ;; for disabling double-click
                          (if (= selected-id task-id)
                            (when-not (= selected-id running-id)
-                             (run-selected-task.))
+                             (RunSelectedTask.))
                            (reset! !selected-id task-id)))
                        (dom/props {:class "text-left flex"})
                        (dom/on "click"
@@ -396,7 +391,7 @@
           (e/server
            (if is-running
              (stop-running-task)
-             (run-selected-task))))
+             (RunSelectedTask.))))
         (dom/props {:class (tw
                             "btn-[* xs] block bg-base-300 animation-none hover:bg-base-100")})
         (dom/text
@@ -413,9 +408,26 @@
                               "btn-[* xs] block bg-base-300 animation-none hover:bg-base-100")})
           (dom/text "Cancel"))))))
 
+#?(:cljs (defn value [^js e] (.-target.value e))) ; workaround inference warnings, todo rename
+
+#?(:clj
+   (do
+     (defmacro control* [event-type parse unparse v V! setter & body]
+       `(let [[state# v#] (e/for-event-pending-switch [e# (e/listen> dom/node ~event-type)]
+                                                      (some->> (~parse e#) (new ~V!)))]
+          ;; (dom/style {:background-color (when (= ::e/pending state#) "yellow")})
+                                        ; workaround "when-true" bug: extra outer when-some added to guard a nil from incorrectly sneaking through
+          (when-some [v# (when (and (not (new dom/Focused?)) (#{::e/init ::e/ok} state#)) ~v)]
+            (~setter dom/node (~unparse v#))) ; js coerce
+          ~@body
+          (case state# (::e/pending ::e/failed) (throw v#) (::e/init ::e/ok) v#)))
+     (defmacro textarea* [v V! & body]
+       `(dom/textarea
+         (control* "input" value identity ~v ~V! dom/set-val ~@body)))))
+
 (e/defn SelectedPanel []
   (dom/div
-    (dom/props {:class "grow p-2 sm:ml-2 rounded bg-base-200 sm:min-h-full"})
+    (dom/props {:class "grow pl-2 py-2 pr-4 sm:ml-2 rounded bg-base-200 sm:min-h-full"})
     (dom/div
       (Breadcrumbs.))
     (if selected-id
@@ -455,16 +467,12 @@
                    (to-date start)
                    " ~ "
                    (to-date end))))))
-          (make-relay !running-notes
-                      (e/watch !running-notes-server)
-                      (fn [v]
-                        (reset! !running-notes-server v))
-                      string?)
-          (ui/textarea
-           running-notes
+          (textarea*
+           (e/server (e/watch !running-notes))
            (e/fn [v]
-             (reset! !running-notes v))
-           (dom/props {:class (tw "textarea-[* md primary] mt-6 w-full max-w-md"
+             (e/server (reset! !running-notes v)))
+           (dom/style {:background-color "bg-base-200"})
+           (dom/props {:class (tw "textarea-[* md primary] text-md mt-2 w-full max-w-lg h-96"
                                   (when-not (= selected-id running-id)
                                     "hidden"))}))))
       (dom/text "Select any task."))))
@@ -483,7 +491,6 @@
      (e/client
       (dom/div
         (dom/props {:class "m-10 sm:flex h-fit min-w-[14rem]"})
-        ;; (TestPanel.)
+        (dom/style {:touch-action "manipulation"})
         (TasksPanel.)
-        (SelectedPanel.)
-        )))))
+        (SelectedPanel.))))))
