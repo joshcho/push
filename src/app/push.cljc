@@ -38,17 +38,24 @@
                       })
      (defonce !conn
        ;; (d/create-conn schema)
-       (d/get-conn "datalevin/db" schema)
-       )
+       (d/get-conn "datalevin/db" schema))
      ;; use relay
      (defonce !running-id (atom nil))
      (defonce !running-start (atom nil))
+     (defonce !running-notes-server (atom ""))
 
      (defonce !running-history (u/make-history-atom !running-id))
      (def delay 0)))
+
+#?(:cljs
+   (do
+     (e/def !running-notes (atom nil))
+     ;; see down below for what happens exactly
+     ))
 (e/def db)
 (e/def running-id (e/server (e/watch !running-id)))
 (e/def running-start (e/server (e/watch !running-start)))
+(e/def running-notes (e/watch !running-notes))
 (e/def selected-id (e/client (e/watch !selected-id)))
 #?(:cljs
    (e/def !selected-id (atom (e/snapshot (e/server @!running-id)))))
@@ -63,10 +70,12 @@
                     [{:db/id         @!running-id
                       :task/interval {:db/id          -1
                                       :interval/start @!running-start
-                                      :interval/end   now}}]))
+                                      :interval/end   now
+                                      :interval/notes @!running-notes}}]))
      (Thread/sleep delay)
      (reset! !running-id (e/client @!selected-id))
-     (reset! !running-start now))))
+     (reset! !running-start now)
+     (reset! !running-notes ""))))
 
 #?(:clj
    (do
@@ -78,7 +87,8 @@
                                         :interval/start @!running-start
                                         :interval/end   now}}])
          (reset! !running-id nil)
-         (reset! !running-start nil)))
+         (reset! !running-start nil)
+         (reset! !running-notes "")))
 
      (comment
        (:task/interval
@@ -141,15 +151,15 @@
                                               :task/name "~stub~"}]
                               :task/toggled false}])))
      "Add")
-    (TaskActionButton.
-     (e/fn []
-       (when (and (not (e/server (:task/subtask (d/entity db task-id))))
-                  (not (= task-id running-id)))
-         (e/server
-          (tx/transact! !conn [[:db.fn/retractEntity task-id]]))
-         (when (= task-id selected-id)
-           (reset! !selected-id nil))))
-     "Del")
+    ;; (TaskActionButton.
+    ;;  (e/fn []
+    ;;    (when (and (not (e/server (:task/subtask (d/entity db task-id))))
+    ;;               (not (= task-id running-id)))
+    ;;      (e/server
+    ;;       (tx/transact! !conn [[:db.fn/retractEntity task-id]]))
+    ;;      (when (= task-id selected-id)
+    ;;        (reset! !selected-id nil))))
+    ;;  "Del")
     (let [!edit-text (atom nil),
           edit-text  (e/watch !edit-text)]
       (dom/div
@@ -179,23 +189,34 @@
                      (.stopPropagation e)
                      (when (u/in? ["Enter" "Escape"] (.-key e))
                        (.preventDefault e)
-                       (e/server (tx/transact!
-                                  !conn [{:db/id task-id :task/name edit-text}]))
-                       (reset! !edit-text nil))))))))))
+                       (if (= (.-value (.-target e)) "")
+                         ;; deletion
+                         (when (and (not (e/server (:task/subtask (d/entity db task-id))))
+                                    (not (= task-id running-id)))
+                           (e/server
+                            (tx/transact! !conn [[:db.fn/retractEntity task-id]]))
+                           (when (= task-id selected-id)
+                             (reset! !selected-id nil)))
+                         ;; edit
+                         (do
+                           (js/console.log "HEY")
+                           (e/server (tx/transact!
+                                      !conn [{:db/id task-id :task/name edit-text}]))
+                           (reset! !edit-text nil))))))))))))
 
 #?(:clj
    (defmacro make-relay
      "Make `ref` into a client-side relay atom. The relay atom does bidirectional updates with the server, indicated by server-value (the flow) and server-effect (the client to server update). The server to client update is a `reset!`."
-     [ref server-value server-effect]
+     [ref server-value server-effect pred]
      `(let [!client-value ~ref]
         (reset! !client-value (e/snapshot (e/server ~server-value)))
         ;; sync from client to server
         (let [client-value (e/watch !client-value)]
-          (when (boolean? client-value)
+          (when (~pred client-value)
             (e/server (~server-effect client-value))))
         ;; sync from server to client
         (let [server-value (e/server ~server-value)]
-          (when (boolean? server-value)
+          (when (~pred server-value)
             (reset! !client-value server-value))))))
 
 ;; (macroexpand-1 '(server-relay-atom
@@ -241,7 +262,8 @@
                                (:task/toggled (d/entity db task-id))
                                (fn [v]
                                  (tx/transact!
-                                  !conn [{:db/id task-id :task/toggled v}])))
+                                  !conn [{:db/id task-id :task/toggled v}]))
+                               boolean?)
                    (dom/div
                      (dom/props
                       {:class (tw "flex"
@@ -267,6 +289,9 @@
                                                            (not editing))
                                               "hidden")})
                          (Toggle. task-id !toggled)))
+                     (dom/div
+                       (dom/props {:class "grow text-transparent"})
+                       (dom/text "_"))
                      (dom/div
                        (dom/props {:class (when-not editing
                                             "hidden")})
@@ -385,6 +410,7 @@
             (e/server
              (reset! !running-id nil)
              (reset! !running-start nil)
+             (reset! !running-notes "")
              (swap! !running-history drop-last)))
           (dom/props {:class (tw
                               "btn-[* xs] block bg-base-300 animation-none hover:bg-base-100")})
@@ -399,15 +425,19 @@
       (dom/div
         (dom/div
           (dom/props {:class "text-lg"})
+          ;; e.g. Learn Libraries
           (dom/text (e/server
                      (-> (d/entity db selected-id)
-                         :task/name))))
+                         :task/name))) )
         (dom/div
           (dom/props {:class "ml-2 mt-[1px]"})
+          ;; start/stop/cancel
           (dom/div
             (dom/props {:class "mb-[5px]"})
             (RunButtons.))
+          ;; e.g. elapsed for...
           (SelectedStatus.)
+          ;; e.g. 8/7 4:35 ~ 8/7 4:36
           (letfn [(to-date [ms]
                     (let [date    (js/Date. (+ ms (* 9 60 60 1000))) ; KST is UTC+9
                           month   (.getUTCMonth date)
@@ -427,7 +457,19 @@
                   (dom/text
                    (to-date start)
                    " ~ "
-                   (to-date end))))))))
+                   (to-date end))))))
+          (make-relay !running-notes
+                      (e/watch !running-notes-server)
+                      (fn [v]
+                        (reset! !running-notes-server v))
+                      string?)
+          (ui/textarea
+           running-notes
+           (e/fn [v]
+             (reset! !running-notes v))
+           (dom/props {:class (tw "textarea-[* md primary] mt-6 w-full max-w-md"
+                                  (when-not (= selected-id running-id)
+                                    "hidden"))}))))
       (dom/text "Select any task."))))
 
 (e/defn TestPanel []

@@ -27,7 +27,7 @@ space = #'\\s+'
     (f args)))
 
 (def tailwind-valid-dash-group-prefixes
-  ["border" "grid" "flex" "input" "btn" "font" "text" "range" "input"])
+  ["border" "grid" "flex" "input" "btn" "font" "text" "range" "input" "textarea"])
 (defn tailwind-generator [tree]
   (->> tree
        (insta/transform
@@ -91,5 +91,6 @@ space = #'\\s+'
         ~@(map (fn [arg]
                  (if (string? arg)
                    (tailwind-compiler arg)
-                   `(tailwind-compiler ~arg)))
+                   `(when ~arg
+                      (tailwind-compiler ~arg))))
                args)))))
