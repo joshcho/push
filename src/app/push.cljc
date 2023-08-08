@@ -1,5 +1,4 @@
 (ns app.push
-  #?(:cljs (:require-macros [app.push :refer [textarea* sync-binding]]))
   (:import [hyperfiddle.electric Pending]
            #?(:clj [java.time Duration Instant]))
   (:require
@@ -16,7 +15,7 @@
    [hyperfiddle.electric-svg :as svg]
    [hyperfiddle.rcf :refer [tests]]
    [missionary.core :as m]
-   ;; [contrib.data :refer [nil-or-empty?]]
+   [contrib.data :refer [nil-or-empty?]]
    ;; #?(:cljs d3)
    ))
 
@@ -35,6 +34,9 @@
                       :task/name             {}
                       :task/interval         {:db/cardinality :db.cardinality/many
                                               :db/valueType   :db.type/ref}
+                      :task/history-show     {:db/valueType :db.type/boolean}
+                      :task/toggled          {:db/valueType :db.type/boolean}
+                      :task/time-group       {} ; :hour, :day, or :month
                       ;; for datalevin, {:db/valueType :db.type/instant}
                       ;; but not working rn
                       ;; for datascript, remove
@@ -167,10 +169,11 @@
     (ui/button
       (e/fn []
         (e/server
-         (tx/transact! !conn [{:db/id        task-id
-                               :task/subtask [{:db/id     -1
-                                               :task/name "~stub~"}]
-                               :task/toggled false}])))
+         (tx/transact! !conn [{:db/id             task-id
+                               :task/subtask      [{:db/id     -1
+                                                    :task/name "~stub~"}]
+                               :task/toggled      false
+                               :task/history-show true}])))
       (dom/props {:class (tw "btn-[* xs]")})
       (dom/on "click" (e/fn [e] (.stopPropagation e)))
       (dom/text "Add"))
@@ -409,6 +412,26 @@
                                  "animation-none hover:bg-base-100")})
           (dom/text "Cancel"))))))
 
+(defn partition-by-range
+  ([n lst]
+   (partition-by-range n lst identity))
+  ([n lst keyfn]
+   (let [add-range (fn [x] [x (* n (int (/ (keyfn x) n)))])]
+     (->> lst
+          (map add-range)
+          (group-by second)
+          vals
+          (map #(map first %))))))
+
+(defn ordinal-suffix [n]
+  (let [tens  (mod n 10)
+        hunds (mod n 100)]
+    (cond
+      (== tens 1) (if (== hunds 11) "th" "st")
+      (== tens 2) (if (== hunds 12) "th" "nd")
+      (== tens 3) (if (== hunds 13) "th" "rd")
+      :else       "th")))
+
 (e/defn SelectedPanel []
   (dom/div
     (dom/props {:class "grow pl-2 py-2 pr-4 sm:ml-2 rounded bg-base-200 sm:min-h-full"})
@@ -423,7 +446,7 @@
                      (-> (d/entity db selected-task-id)
                          :task/name))) )
         (dom/div
-          (dom/props {:class "ml-2 mt-[1px] h-[500px] flex flex-col"})
+          (dom/props {:class "ml-2 mt-[1px] h-[700px] flex flex-col"})
           ;; start/stop/cancel
           (dom/div
             (dom/props {:class "mb-[5px]"})
@@ -431,26 +454,134 @@
           ;; e.g. elapsed for...
           (SelectedStatus.)
           ;; e.g. 8/7 4:35 ~ 8/7 4:36
-          (letfn [(to-date [ms]
-                    (let [date    (js/Date. (+ ms (* 9 60 60 1000))) ; KST is UTC+9
-                          month   (.getUTCMonth date)
-                          day     (.getUTCDate date)
-                          hours   (.getUTCHours date)
-                          minutes (.getUTCMinutes date)]
-                      (str (inc month) "/" day " " hours ":" minutes)))]
-            (dom/div
-              (e/for [[start end] (e/server
-                                   (reverse
-                                    (sort-by
-                                     first
-                                     (map #(vector (:interval/start %)
-                                                   (:interval/end %))
-                                          (:task/interval (d/entity db selected-task-id))))))]
+          ;; (letfn [(to-date [ms]
+          ;;           (let [date    (js/Date. (+ ms (* 9 60 60 1000))) ; KST is UTC+9
+          ;;                 month   (.getUTCMonth date)
+          ;;                 day     (.getUTCDate date)
+          ;;                 hours   (.getUTCHours date)
+          ;;                 minutes (.getUTCMinutes date)]
+          ;;             (str (inc month) "/" day " " hours ":" minutes)))]
+          ;;   (dom/div
+          ;;     (e/for [[start end] (e/server
+          ;;                          (reverse
+          ;;                           (map #(vector (:interval/start %)
+          ;;                                         (:interval/end %))
+          ;;                                (sort-by
+          ;;                                 :interval/start
+          ;;                                 (:task/interval (d/entity db selected-task-id))))))]
+          ;;       (dom/div
+          ;;         (dom/text
+          ;;          (to-date start)
+          ;;          " ~ "
+          ;;          (to-date end))))))
+          (dom/div
+            (dom/props {:class (tw "flex-[* col] gap-3 my-2")})
+            (let [past-note-ids (e/server
+                                 (->> (d/entity db selected-task-id)
+                                      :task/interval
+                                      (sort-by :interval/start)
+                                      (remove #(nil-or-empty? (:interval/note %)))
+                                      (map #(select-keys % [:db/id :interval/start
+                                                            :interval/note]))))
+                  history-show  (e/server (:task/history-show
+                                           (d/entity db selected-task-id)))
+                  time-group    (e/server (or (:task/time-group
+                                               (d/entity db selected-task-id))
+                                              :day))
+                  show-full     (e/server (:task/show-full
+                                           (d/entity db selected-task-id)))]
+              ;; (dom/text past-note-ids)
+              (when-not (nil-or-empty? past-note-ids)
                 (dom/div
-                  (dom/text
-                   (to-date start)
-                   " ~ "
-                   (to-date end))))))
+                  (dom/props {:class "flex gap-2"})
+                  (ui/button
+                    (e/fn []
+                      (e/server
+                       (tx/transact! !conn
+                                     [{:db/id selected-task-id
+                                       :task/history-show
+                                       (not (e/snapshot history-show))}])))
+                    (dom/props {:class (tw "btn-[* xs] bg-base-300 hover:bg-base-100")})
+                    (dom/text
+                     (if history-show
+                       "hide past notes"
+                       "show past notes")))
+                  (ui/button
+                    (e/fn []
+                      (e/server
+                       (tx/transact! !conn
+                                     [{:db/id selected-task-id
+                                       :task/time-group
+                                       (case (e/snapshot time-group)
+                                         :hour  :day
+                                         :day   :month
+                                         :month :hour)}])))
+                    (dom/props {:class (tw "btn-[* xs] bg-base-300 hover:bg-base-100")})
+                    (dom/text (str "group by "
+                                   (name (case time-group
+                                           :hour  :day
+                                           :day   :month
+                                           :month :hour)))))
+                  (ui/button
+                    (e/fn []
+                      (e/server
+                       (tx/transact! !conn
+                                     [{:db/id selected-task-id
+                                       :task/show-full
+                                       (not (e/snapshot show-full))}])))
+                    (dom/props {:class (tw "btn-[* xs] bg-base-300 hover:bg-base-100")})
+                    (dom/text
+                     (if show-full
+                       "show short"
+                       "show full")))))
+              (when (and history-show (not (nil-or-empty? past-note-ids)))
+                (dom/div
+                  (dom/props {:class (tw "flex-[* col] gap-3 mb-2"
+                                         (when-not show-full
+                                           "max-h-96 overflow-auto"))})
+                  ;; (set! (.-scrollTop dom/node)
+                  ;;       (.-scrollHeight dom/node))
+                  (let [time-range
+                        (case time-group
+                          :hour (* 60 60 1000)
+                          :day  (* 60 60 60 1000)
+                          (* 60 60 60 1000))]
+                    (e/for [same-range-note-maps
+                            (partition-by-range time-range
+                                                past-note-ids :interval/start)]
+                      (when-not (nil-or-empty? same-range-note-maps)
+                        (let [time-range-start (* (js/Math.round
+                                                   (/ (:interval/start
+                                                       (first same-range-note-maps))
+                                                      time-range))
+                                                  time-range)]
+                          (dom/div
+                            (dom/text
+                             (let [date    (js/Date. (+ time-range-start
+                                                        (* 16 60 60 1000))) ; KST adjustment
+                                   options (clj->js
+                                            (case time-group
+                                              :hour  {:month "long"
+                                                      :day   "numeric"
+                                                      :hour  "numeric"}
+                                              :day   {:month "long"
+                                                      :day   "numeric"}
+                                              :month {:month "long"}))]
+                               (str
+                                (.toLocaleDateString date "en-US" options)
+                                (when (= time-group :day)
+                                  (ordinal-suffix (.getUTCDate date))))))))
+                        (dom/div
+                          (dom/props {:class (tw "bg-base-100 card py-[2px] px-3")})
+                          (e/for [note (map :interval/note same-range-note-maps)]
+                            (dom/div
+                              (dom/props {:class
+                                          (tw "border-[b gray-400] last:border-b-0")})
+                              (dom/div
+                                (dom/props {:class "card-body p-2 whitespace-pre"})
+                                (dom/text note)))))
+                        )
+                      ))))))
           (u/textarea*
            running-note
            (e/fn [v]
@@ -458,9 +589,8 @@
               (tx/transact! !conn [{:db/id         running-interval-id
                                     :interval/note v}])))
            (dom/style {:background-color "bg-base-200"})
-           ;; (dom/props {:class (tw "textarea-[* sm primary]")})
            (dom/props {:class (tw "textarea-[* sm primary]"
-                                  "w-full text-lg my-2"
+                                  "w-full text-md"
                                   "grow focus:outline-none"
                                   (when-not (= selected-task-id running-task-id)
                                     "invisible"))}))))
@@ -486,7 +616,7 @@
           (e/server
            (swap! !present assoc session-id username)
            (e/on-unmount #(swap! !present dissoc session-id)))
-          (dom/div (dom/text "[" user-id "] " username))
+          ;; (dom/div (dom/text "[" user-id "] " username))
           (when user-id
             (dom/div
               (dom/props {:class "m-10 sm:flex h-fit min-w-[14rem]"})
