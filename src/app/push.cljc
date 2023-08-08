@@ -20,10 +20,6 @@
    ;; #?(:cljs d3)
    ))
 
-(defn empty->nil [s]
-  (if (empty? s)
-    nil s))
-
 #?(:clj
    (do
      ;; add user, creation date, root-tasks
@@ -44,32 +40,41 @@
                       ;; for datascript, remove
                       :interval/start        {}
                       :interval/end          {}
-                      :interval/notes        {:db/valueType :db.type/string}})
+                      :interval/note         {:db/valueType :db.type/string}})
      (defonce !conn
        ;; (d/create-conn schema)
        (d/get-conn "datalevin/db" schema))
      (def delay-amount 0)
      (defonce !present (atom {}))
      (comment
+       (defn delete-all-intervals [conn]
+         (let [intervals (d/q '[:find ?e
+                                :where
+                                [?e :task/interval]]
+                              @conn)]
+           (d/transact conn (mapv (fn [[e]] [:db/retract e :task/interval]) intervals))))
+       (delete-all-intervals !conn))
+     (comment
        (tx/transact! !conn [{:db/id 87 :user/task [{:db/id     -1
                                                     :task/name "Play"}
                                                    {:db/id     -2
                                                     :task/name "Metaphysics"}]}]))))
+
+
 (e/def db)
 (e/def present (e/server (e/watch !present)))
 (e/def session-id (e/server (get-in e/*http-request* [:headers "sec-websocket-key"])))
 (e/def username (e/server (get-in e/*http-request* [:cookies "username" :value])))
 (e/def user (d/entity (e/watch !conn) [:user/username username]))
 (e/def user-id (e/server (:db/id user)))
-(e/def running-id (e/server (->> user :user/running-task :db/id)))
+(e/def running-task-id (e/server (->> user :user/running-task :db/id)))
 (e/def running-interval (e/server (->> user :user/running-interval)))
 (e/def running-interval-id (e/server (->> running-interval :db/id)))
 (e/def running-start (e/server (->> running-interval :interval/start)))
-(e/def running-notes (e/server (->> running-interval :interval/notes)))
-
-(e/def selected-id (e/client (e/watch !selected-id)))
+(e/def running-note (e/server (->> running-interval :interval/note)))
 #?(:cljs
-   (e/def !selected-id (atom (e/snapshot running-id))))
+   (e/def !selected-task-id (atom (e/snapshot running-task-id))))
+(e/def selected-task-id (e/client (e/watch !selected-task-id)))
 
 (e/defn CancelRunningTask []
   (e/server
@@ -83,7 +88,7 @@
      (d/transact! !conn
                   [{:db/id        (e/snapshot running-interval-id)
                     :interval/end now}
-                   {:db/id         (e/snapshot running-id)
+                   {:db/id         (e/snapshot running-task-id)
                     :task/interval (e/snapshot running-interval-id)}
                    [:db/retract user-id :user/running-task]
                    [:db/retract user-id :user/running-interval]]))))
@@ -93,30 +98,16 @@
    (let [now (System/currentTimeMillis)]
      (d/transact! !conn
                   (concat
-                   (when (e/snapshot running-id)
+                   (when (e/snapshot running-task-id)
                      [{:db/id        (e/snapshot running-interval-id)
                        :interval/end now}
-                      {:db/id         (e/snapshot running-id)
+                      {:db/id         (e/snapshot running-task-id)
                        :task/interval (e/snapshot running-interval-id)}])
                    [{:db/id                 user-id
-                     :user/running-task     (e/snapshot selected-id)
+                     :user/running-task     (e/snapshot selected-task-id)
                      :user/running-interval {:db/id          -1
                                              :interval/start now
-                                             :interval/notes ""}}])))))
-
-#?(:clj
-   (do
-     (comment
-       (:task/interval
-        (d/entity @!conn 26))
-
-       (defn delete-all-intervals [conn]
-         (let [intervals (d/q '[:find ?e
-                                :where
-                                [?e :task/interval]]
-                              @conn)]
-           (d/transact conn (mapv (fn [[e]] [:db/retract e :task/interval]) intervals))))
-       (delete-all-intervals !conn))))
+                                             :interval/note  ""}}])))))
 
 (e/defn Toggle [task-id !toggled]
   (let [toggled (e/watch !toggled)]
@@ -185,11 +176,11 @@
                        (if (= (.-value (.-target e)) "")
                          ;; deletion
                          (when (and (not (e/server (:task/subtask (d/entity db task-id))))
-                                    (not (= task-id running-id)))
+                                    (not (= task-id running-task-id)))
                            (e/server
                             (tx/transact! !conn [[:db.fn/retractEntity task-id]]))
-                           (when (= task-id selected-id)
-                             (reset! !selected-id nil)))
+                           (when (= task-id selected-task-id)
+                             (reset! !selected-task-id nil)))
                          ;; edit
                          (do
                            (e/server (tx/transact!
@@ -199,15 +190,15 @@
 (e/def TaskList)
 (e/defn TasksPanel []
   (dom/div
-    (dom/props {:class "grow sm:max-w-xs min-h-[14rem] sm:min-h-[18rem] min-h-full sm:h-none mb-2 sm:mb-0 p-2 rounded bg-base-200"})
-    (dom/on "click"
-            (e/fn [e]
-              (reset! !selected-id nil)))
+    (dom/props {:class "grow sm:max-w-[200px] min-h-[14rem] sm:min-h-[18rem] min-h-full sm:h-none mb-2 sm:mb-0 p-2 rounded bg-base-200"})
+    ;; (dom/on "click"
+    ;;         (e/fn [e]
+    ;;           (reset! !selected-task-id nil)))
     (let [!editing (atom false), editing (e/watch !editing)]
       (dom/div
         (dom/props {:class "text-xl font-bold flex items-center"})
         (ui/button
-          (e/fn [] (reset! !selected-id running-id))
+          (e/fn [] (reset! !selected-task-id running-task-id))
           (dom/on "click" (e/fn [e]
                             (.stopPropagation e)))
           (dom/text "Day 5"))
@@ -238,23 +229,23 @@
                                  boolean?)
                    (dom/div
                      (dom/props
-                      {:class (tw "flex"
-                                  (when (= task-id running-id)
+                      {:class (tw "flex justify-between"
+                                  (when (= task-id running-task-id)
                                     "font-bold"))})
                      (ui/button
                        (e/fn []
                          ;; for disabling double-click
-                         (if (= selected-id task-id)
-                           (when-not (= selected-id running-id)
+                         (if (= selected-task-id task-id)
+                           (when-not (= selected-task-id running-task-id)
                              (e/server
                               (RunSelectedTask.)))
-                           (reset! !selected-id task-id)))
+                           (reset! !selected-task-id task-id)))
                        (dom/props {:class "text-left flex"})
                        (dom/on "click"
                                (e/fn [e]
                                  (.stopPropagation e)))
                        (dom/div
-                         (dom/props {:class (when (= task-id selected-id)
+                         (dom/props {:class (when (= task-id selected-task-id)
                                               "underline")})
                          (dom/text task))
                        (dom/div
@@ -262,9 +253,6 @@
                                                            (not editing))
                                               "hidden")})
                          (Toggle. task-id !toggled)))
-                     (dom/div
-                       (dom/props {:class "grow text-transparent"})
-                       (dom/text "_"))
                      (dom/div
                        (dom/props {:class (when-not editing
                                             "hidden")})
@@ -284,7 +272,7 @@
 (e/defn SelectTaskButton [target-id props]
   (ui/button
     (e/fn []
-      (reset! !selected-id target-id)
+      (reset! !selected-task-id target-id)
       (doseq [ancestor-task-id (e/server (db/get-ancestor-task-ids db target-id))]
         (e/server
          (tx/transact! !conn [{:db/id        ancestor-task-id
@@ -312,12 +300,13 @@
           (let [running-history (e/server (e/watch !running-history))
                 ordered-ancestor-ids
                 (e/server (vec (map #(:db/id (d/entity db %))
-                                    (db/get-ancestor-task-ids db selected-id))))
+                                    (db/get-ancestor-task-ids db selected-task-id))))
                 ;; breadcrumbs-task-ids
                 bc-task-ids     (take-last (if show-cutoff
                                              max-cutoff cutoff)
                                            ;; remove sequential dups
                                            (->> running-history
+                                                (remove nil?)
                                                 (partition-by identity)
                                                 (map first)))]
             (e/for [[is-last bc-task-id]
@@ -331,24 +320,24 @@
                                      {:class
                                       (str
                                        "hover:underline"
-                                       (when (if (= selected-id running-id)
+                                       (when (if (= selected-task-id running-task-id)
                                                is-last
-                                               (= selected-id bc-task-id))
+                                               (= selected-task-id bc-task-id))
                                          " underline"))}))))))))))
 
 (e/defn SelectedStatus []
-  (let [ancestor-task-ids   (e/server (db/get-ancestor-task-ids db running-id))
-        descendant-task-ids (e/server (db/get-descendant-task-ids db running-id))]
+  (let [ancestor-task-ids   (e/server (db/get-ancestor-task-ids db running-task-id))
+        descendant-task-ids (e/server (db/get-descendant-task-ids db running-task-id))]
     (dom/div
       (dom/props {:class "text-sm mt-[2px]"})
-      (cond (u/in? ancestor-task-ids selected-id)
+      (cond (u/in? ancestor-task-ids selected-task-id)
             (dom/div
               (dom/text "Ancestor of currently running ")
-              (SelectTaskButton. running-id
+              (SelectTaskButton. running-task-id
                                  {:class "text-xs italic"}))
             (and
-             running-id           ; we should have something running
-             (= selected-id running-id))
+             running-task-id           ; we should have something running
+             (= selected-task-id running-task-id))
             (let [duration (e/server
                             (int
                              (/ (- e/system-time-ms running-start)
@@ -356,17 +345,17 @@
               (if (= duration 0)
                 (dom/text "Starting "
                           (e/server
-                           (-> (d/entity db selected-id)
+                           (-> (d/entity db selected-task-id)
                                :task/name)))
                 (dom/text "Elapsed for " duration " s")))
-            (u/in? descendant-task-ids selected-id)
+            (u/in? descendant-task-ids selected-task-id)
             (dom/div
               (dom/text "Descendant of currently running ")
-              (SelectTaskButton. running-id
+              (SelectTaskButton. running-task-id
                                  {:class "text-xs italic"}))))))
 
 (e/defn RunButtons []
-  (let [is-running (= running-id selected-id)]
+  (let [is-running (= running-task-id selected-task-id)]
     (dom/div
       (dom/props {:class "flex gap-2"})
       (ui/button
@@ -388,38 +377,21 @@
                                  "animation-none hover:bg-base-100")})
           (dom/text "Cancel"))))))
 
-#?(:cljs (defn value [^js e] (.-target.value e))) ; workaround inference warnings, todo rename
-
-#?(:clj
-   (do
-     (defmacro control* [event-type parse unparse v V! setter & body]
-       `(let [[state# v#] (e/for-event-pending-switch [e# (e/listen> dom/node ~event-type)]
-                                                      (some->> (~parse e#) (new ~V!)))]
-          ;; (dom/style {:background-color (when (= ::e/pending state#) "yellow")})
-                                        ; workaround "when-true" bug: extra outer when-some added to guard a nil from incorrectly sneaking through
-          (when-some [v# (when (and (not (new dom/Focused?)) (#{::e/init ::e/ok} state#)) ~v)]
-            (~setter dom/node (~unparse v#))) ; js coerce
-          ~@body
-          (case state# (::e/pending ::e/failed) (throw v#) (::e/init ::e/ok) v#)))
-     (defmacro textarea* [v V! & body]
-       `(dom/textarea
-         (control* "input" value identity ~v ~V! dom/set-val ~@body)))))
-
 (e/defn SelectedPanel []
   (dom/div
     (dom/props {:class "grow pl-2 py-2 pr-4 sm:ml-2 rounded bg-base-200 sm:min-h-full"})
     (dom/div
       (Breadcrumbs.))
-    (if selected-id
+    (if selected-task-id
       (dom/div
         (dom/div
           (dom/props {:class "text-lg"})
           ;; e.g. Learn Libraries
           (dom/text (e/server
-                     (-> (d/entity db selected-id)
+                     (-> (d/entity db selected-task-id)
                          :task/name))) )
         (dom/div
-          (dom/props {:class "ml-2 mt-[1px]"})
+          (dom/props {:class "ml-2 mt-[1px] h-[500px] flex flex-col"})
           ;; start/stop/cancel
           (dom/div
             (dom/props {:class "mb-[5px]"})
@@ -441,23 +413,25 @@
                                      first
                                      (map #(vector (:interval/start %)
                                                    (:interval/end %))
-                                          (:task/interval (d/entity db selected-id))))))]
+                                          (:task/interval (d/entity db selected-task-id))))))]
                 (dom/div
                   (dom/text
                    (to-date start)
                    " ~ "
                    (to-date end))))))
-          (textarea*
-           running-notes
+          (u/textarea*
+           running-note
            (e/fn [v]
              (e/server
-              (tx/transact! !conn [{:db/id          running-interval-id
-                                    :interval/notes v}])))
+              (tx/transact! !conn [{:db/id         running-interval-id
+                                    :interval/note v}])))
            (dom/style {:background-color "bg-base-200"})
-           (dom/props {:class (tw "textarea-[* md primary] text-lg mt-2"
-                                  "w-full max-w-lg h-[500px] focus:outline-none"
-                                  (when-not (= selected-id running-id)
-                                    "hidden"))}))))
+           ;; (dom/props {:class (tw "textarea-[* sm primary]")})
+           (dom/props {:class (tw "textarea-[* sm primary]"
+                                  "w-full text-lg my-2"
+                                  "grow focus:outline-none"
+                                  (when-not (= selected-task-id running-task-id)
+                                    "invisible"))}))))
       (dom/text "Select any task."))))
 
 (e/def some-value (e/server (:value (d/entity (e/watch !conn) 1000))))
