@@ -1,5 +1,5 @@
 (ns app.push
-  #?(:cljs (:require-macros [app.push :refer [make-relay textarea*]]))
+  #?(:cljs (:require-macros [app.push :refer [make-relay textarea* sync-binding]]))
   (:import [hyperfiddle.electric Pending]
            #?(:clj [java.time Duration Instant]))
   (:require
@@ -16,26 +16,34 @@
    [hyperfiddle.electric-svg :as svg]
    [hyperfiddle.rcf :refer [tests]]
    [missionary.core :as m]
-   [contrib.str :refer [empty->nil]]
+   ;; [contrib.data :refer [nil-or-empty?]]
    ;; #?(:cljs d3)
    ))
+
+(defn empty->nil [s]
+  (if (empty? s)
+    nil s))
 
 #?(:clj
    (do
      ;; add user, creation date, root-tasks
-     (defonce schema {:task/subtask   {:db/cardinality :db.cardinality/many
-                                       :db/valueType   :db.type/ref}
-                      :task/name      {}
-                      :task/interval  {:db/cardinality :db.cardinality/many
-                                       :db/valueType   :db.type/ref}
-                      :task/toggled   {}
+     (defonce schema {:user/username         {:db/valueType :db.type/string
+                                              :db/unique    :db.unique/identity}
+                      :user/task             {:db/cardinality :db.cardinality/many
+                                              :db/valueType   :db.type/ref}
+                      :user/running-task     {:db/valueType :db.type/ref}
+                      :user/running-interval {:db/valueType :db.type/ref}
+                      :task/subtask          {:db/cardinality :db.cardinality/many
+                                              :db/valueType   :db.type/ref}
+                      :task/name             {}
+                      :task/interval         {:db/cardinality :db.cardinality/many
+                                              :db/valueType   :db.type/ref}
                       ;; for datalevin, {:db/valueType :db.type/instant}
                       ;; but not working rn
                       ;; for datascript, remove
-                      :interval/start {}
-                      :interval/end   {}
-                      :interval/notes {}
-                      })
+                      :interval/start        {}
+                      :interval/end          {}
+                      :interval/notes        {}})
      (defonce !conn
        ;; (d/create-conn schema)
        (d/get-conn "datalevin/db" schema))
@@ -44,7 +52,14 @@
      (defonce !running-start (atom nil))
      (defonce !running-notes (atom ""))
      (defonce !running-history (u/make-history-atom !running-id))
-     (def delay-amount 0)))
+     (def delay-amount 0)
+     (defonce !present (atom {}))
+     (comment
+       (tx/transact! !conn [{:db/id 87 :user/task [{:db/id     -1
+                                                    :task/name "Play"}
+                                                   {:db/id     -2
+                                                    :task/name "Metaphysics"}]}]))))
+(e/def present (e/server (e/watch !present)))
 
 #?(:clj
    (defmacro make-relay
@@ -62,6 +77,7 @@
             (reset! !client-value server-value))))))
 
 (e/def db)
+(e/def user-id)
 (e/def running-id (e/server (e/watch !running-id)))
 (e/def running-start (e/server (e/watch !running-start)))
 (e/def running-notes (e/server (e/watch !running-notes)))
@@ -211,11 +227,6 @@
                                       !conn [{:db/id task-id :task/name edit-text}]))
                            (reset! !edit-text nil))))))))))))
 
-;; (macroexpand-1 '(server-relay-atom
-;;                  (:task/toggled (d/entity db task-id))
-;;                  (fn [v]
-;;                    (tx/transact!
-;;                     !conn [{:db/id task-id :task/toggled v}]))))
 (e/def TaskList)
 (e/defn TasksPanel []
   (dom/div
@@ -296,7 +307,9 @@
                                      "hidden")})
                        (TaskList. subtask-ids))))))]
           (dom/props {:class "mt-[2px]"})
-          (TaskList. (e/server (db/get-root-task-ids db))))))))
+          (TaskList. (e/server
+                      (map d/datom-v
+                           (d/datoms db :eav user-id :user/task)))))))))
 
 (e/defn SelectTaskButton [target-id props]
   (ui/button
@@ -485,12 +498,47 @@
     (let [a 2]
       (dom/text "abcd" a))))
 
+#?(:clj
+   (defmacro sync-binding
+     "Does binding in both server and client scope. Make sure to explicitly specify the scope in bindings (e.g. e/client or e/server). Body is evaluated in client scope."
+     {:style/indent 1}
+     [bindings & body]
+     `(e/server
+       (binding ~bindings
+         (e/client
+          (binding ~bindings
+            ~@body))))))
+
 (e/defn PushApp []
   (e/server
-   (binding [db (e/watch !conn)]
-     (e/client
-      (dom/div
-        (dom/props {:class "m-10 sm:flex h-fit min-w-[14rem]"})
-        (dom/style {:touch-action "manipulation"})
-        (TasksPanel.)
-        (SelectedPanel.))))))
+   (let [session-id (get-in e/*http-request* [:headers "sec-websocket-key"])
+         username   (get-in e/*http-request* [:cookies "username" :value])]
+     (binding [db (e/watch !conn)]
+       (e/client
+        (if-not (some? username)
+          (dom/div
+            (dom/text "Set login cookie here: ")
+            (dom/a (dom/props {::dom/href "/auth"
+                               :class     "text-green-500"})
+                   (dom/text "/auth"))
+            (dom/text " (blank password)"))
+          (do
+            (e/server
+             (when (nil? (d/entity db [:user/username username]))
+               (tx/transact! !conn [{:db/id -1 :user/username username}])))
+            (e/server
+             (swap! !present assoc session-id username)
+             (e/on-unmount #(swap! !present dissoc session-id)))
+            (dom/div (dom/text username))
+            (e/server
+             (sync-binding [user-id (e/server
+                                     (:db/id (d/entity db [:user/username username])))]
+               ;; now user-id is visible for both client and server scope
+               (when user-id
+                 (dom/div
+                   (dom/props {:class "m-10 sm:flex h-fit min-w-[14rem]"})
+                   (dom/style {:touch-action "manipulation"})
+                   (dom/text user-id)
+                   (dom/text (e/server user-id))
+                   (TasksPanel.)
+                   (SelectedPanel.))))))))))))

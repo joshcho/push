@@ -4,15 +4,15 @@
    ;; [datascript.core :as d]
    ))
 
-(defn get-root-task-ids [db]
-  (->>
-   (d/q '[:find [(pull ?e [:db/id :task/name :task/subtask]) ...]
-          :where
-          [?e :task/name ?n]
-          (not [?f :task/subtask ?e])]
-        db)
-   (map :db/id)
-   sort))
+;; (defn get-root-task-ids [db]
+;;   (->>
+;;    (d/q '[:find [(pull ?e [:db/id :task/name :task/subtask]) ...]
+;;           :where
+;;           [?e :task/name ?n]
+;;           (not [?f :task/subtask ?e])]
+;;         db)
+;;    (map :db/id)
+;;    sort))
 
 (def rules
   '[[(ancestor ?e ?a)
