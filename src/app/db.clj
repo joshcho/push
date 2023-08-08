@@ -32,10 +32,10 @@
 
 (defn get-descendant-task-ids [db task-id]
   (->
-   (d/q '[:find [?ancestor ...]
+   (d/q '[:find [?descendant ...]
           :in $ % ?task
           :where
-          (ancestor ?task ?ancestor)]
+          (ancestor ?task ?descendant)]
         db rules task-id)
    reverse))
 

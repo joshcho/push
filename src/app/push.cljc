@@ -29,7 +29,7 @@
                                               :db/valueType   :db.type/ref}
                       :user/running-task     {:db/valueType :db.type/ref}
                       :user/running-interval {:db/valueType :db.type/ref}
-                      :user/running-history  {}
+                      ;; :user/running-history  {}
                       :task/subtask          {:db/cardinality :db.cardinality/many
                                               :db/valueType   :db.type/ref}
                       :task/name             {}
@@ -72,6 +72,37 @@
 (e/def running-interval-id (e/server (->> running-interval :db/id)))
 (e/def running-start (e/server (->> running-interval :interval/start)))
 (e/def running-note (e/server (->> running-interval :interval/note)))
+
+#?(:clj
+   (do
+     ;; (def !how-many (atom 0))
+     (defn get-running-history [db user-id]
+       ;; (swap! !how-many inc)
+       (concat
+        (->>
+         (d/q '[:find (pull ?i [:interval/start]) ?subtask
+                :in $ % ?u
+                :where
+                [?u :user/task ?t]
+                (or (ancestor ?t ?subtask)
+                    [(= ?t ?subtask)])
+                [?subtask :task/interval ?i]]
+              @!conn
+              '[[(ancestor ?e ?a)
+                 [?e :task/subtask ?a]]
+                [(ancestor ?e ?a)
+                 [?e :task/subtask ?b]
+                 (ancestor ?b ?a)]]
+              user-id)
+         (sort-by (comp :interval/start first))
+         (map second))
+        (when-let [running-task-id
+                   (:db/id (:user/running-task (d/entity db user-id)))]
+          [running-task-id])))))
+
+(e/def running-history (e/server (get-running-history (e/watch !conn)
+                                                      user-id)))
+
 #?(:cljs
    (e/def !selected-task-id (atom (e/snapshot running-task-id))))
 (e/def selected-task-id (e/client (e/watch !selected-task-id)))
@@ -83,6 +114,7 @@
                  [:db/retract user-id :user/running-interval]])))
 
 (e/defn StopRunningTask []
+  ;; when you refactor this, refactor RunSelectedTask
   (e/server
    (let [now (System/currentTimeMillis)]
      (d/transact! !conn
@@ -297,18 +329,18 @@
       (dom/div
         (dom/props {:class "ml-[1px] mt-[-10px] mb-[-8px] text-xs breadcrumbs"})
         (dom/ul
-          (let [running-history (e/server (e/watch !running-history))
+          (let [ ;; running-history (e/server (e/watch !running-history))
                 ordered-ancestor-ids
                 (e/server (vec (map #(:db/id (d/entity db %))
                                     (db/get-ancestor-task-ids db selected-task-id))))
                 ;; breadcrumbs-task-ids
-                bc-task-ids     (take-last (if show-cutoff
-                                             max-cutoff cutoff)
-                                           ;; remove sequential dups
-                                           (->> running-history
-                                                (remove nil?)
-                                                (partition-by identity)
-                                                (map first)))]
+                bc-task-ids (take-last (if show-cutoff
+                                         max-cutoff cutoff)
+                                       ;; remove sequential dups
+                                       (->> running-history
+                                            (remove nil?)
+                                            (partition-by identity)
+                                            (map first)))]
             (e/for [[is-last bc-task-id]
                     (map-indexed (fn [idx bc-task-id]
                                    [(= idx (dec (count bc-task-ids))) bc-task-id])
@@ -439,6 +471,7 @@
   (e/server
    (binding [db (e/watch !conn)]
      (e/client
+      ;; (dom/text running-history)
       (if-not (some? username)
         (dom/div
           (dom/text "Set login cookie here: ")
