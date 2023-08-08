@@ -1,6 +1,7 @@
 ;; {:nextjournal.clerk/visibility {:code :hide :result :hide}}
 
 (ns app.utils
+  #?(:cljs (:require-macros [app.utils :refer [make-relay]]))
   (:require
    #?(:cljs
       [goog.string :as gstring])
@@ -178,6 +179,21 @@
                             new)
                    (swap! history-atom #(conj % new)))))
     history-atom))
+
+#?(:clj
+   (defmacro make-relay
+     "Make `ref` into a client-side relay atom. The relay atom does bidirectional updates with the server, indicated by server-value (the flow) and server-effect (the client to server update). The server to client update is a `reset!`."
+     [ref server-value server-effect pred]
+     `(let [!client-value ~ref]
+        (reset! !client-value (e/snapshot (e/server ~server-value)))
+        ;; sync from client to server
+        (let [client-value (e/watch !client-value)]
+          (when (~pred client-value)
+            (e/server (~server-effect client-value))))
+        ;; sync from server to client
+        (let [server-value (e/server ~server-value)]
+          (when (~pred server-value)
+            (reset! !client-value server-value))))))
 
 (comment
   (tests

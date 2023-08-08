@@ -1,5 +1,5 @@
 (ns app.push
-  #?(:cljs (:require-macros [app.push :refer [make-relay textarea* sync-binding]]))
+  #?(:cljs (:require-macros [app.push :refer [textarea* sync-binding]]))
   (:import [hyperfiddle.electric Pending]
            #?(:clj [java.time Duration Instant]))
   (:require
@@ -33,6 +33,7 @@
                                               :db/valueType   :db.type/ref}
                       :user/running-task     {:db/valueType :db.type/ref}
                       :user/running-interval {:db/valueType :db.type/ref}
+                      :user/running-history  {}
                       :task/subtask          {:db/cardinality :db.cardinality/many
                                               :db/valueType   :db.type/ref}
                       :task/name             {}
@@ -43,15 +44,10 @@
                       ;; for datascript, remove
                       :interval/start        {}
                       :interval/end          {}
-                      :interval/notes        {}})
+                      :interval/notes        {:db/valueType :db.type/string}})
      (defonce !conn
        ;; (d/create-conn schema)
        (d/get-conn "datalevin/db" schema))
-     ;; use relay
-     (defonce !running-id (atom nil))
-     (defonce !running-start (atom nil))
-     (defonce !running-notes (atom ""))
-     (defonce !running-history (u/make-history-atom !running-id))
      (def delay-amount 0)
      (defonce !present (atom {}))
      (comment
@@ -59,63 +55,57 @@
                                                     :task/name "Play"}
                                                    {:db/id     -2
                                                     :task/name "Metaphysics"}]}]))))
-(e/def present (e/server (e/watch !present)))
-
-#?(:clj
-   (defmacro make-relay
-     "Make `ref` into a client-side relay atom. The relay atom does bidirectional updates with the server, indicated by server-value (the flow) and server-effect (the client to server update). The server to client update is a `reset!`."
-     [ref server-value server-effect pred]
-     `(let [!client-value ~ref]
-        (reset! !client-value (e/snapshot (e/server ~server-value)))
-        ;; sync from client to server
-        (let [client-value (e/watch !client-value)]
-          (when (~pred client-value)
-            (e/server (~server-effect client-value))))
-        ;; sync from server to client
-        (let [server-value (e/server ~server-value)]
-          (when (~pred server-value)
-            (reset! !client-value server-value))))))
-
 (e/def db)
-(e/def user-id)
-(e/def running-id (e/server (e/watch !running-id)))
-(e/def running-start (e/server (e/watch !running-start)))
-(e/def running-notes (e/server (e/watch !running-notes)))
+(e/def present (e/server (e/watch !present)))
+(e/def session-id (e/server (get-in e/*http-request* [:headers "sec-websocket-key"])))
+(e/def username (e/server (get-in e/*http-request* [:cookies "username" :value])))
+(e/def user (d/entity (e/watch !conn) [:user/username username]))
+(e/def user-id (e/server (:db/id user)))
+(e/def running-id (e/server (->> user :user/running-task :db/id)))
+(e/def running-interval (e/server (->> user :user/running-interval)))
+(e/def running-interval-id (e/server (->> running-interval :db/id)))
+(e/def running-start (e/server (->> running-interval :interval/start)))
+(e/def running-notes (e/server (->> running-interval :interval/notes)))
+
 (e/def selected-id (e/client (e/watch !selected-id)))
 #?(:cljs
-   (e/def !selected-id (atom (e/snapshot (e/server @!running-id)))))
+   (e/def !selected-id (atom (e/snapshot running-id))))
 
-(e/defn RunSelectedTask []
-  ;; we can't use stop-running-task because we have to sync the start and end times
-  ;; much like compare-and-swap
+(e/defn CancelRunningTask []
+  (e/server
+   (d/transact! !conn
+                [[:db/retract user-id :user/running-task]
+                 [:db/retract user-id :user/running-interval]])))
+
+(e/defn StopRunningTask []
   (e/server
    (let [now (System/currentTimeMillis)]
-     (when @!running-id
-       (d/transact! !conn
-                    [{:db/id         @!running-id
-                      :task/interval {:db/id          -1
-                                      :interval/start @!running-start
-                                      :interval/end   now
-                                      ;; :interval/notes (e/client @!running-notes)
-                                      }}]))
-     (Thread/sleep delay-amount)
-     (reset! !running-id (e/client @!selected-id))
-     (reset! !running-start now)
-     (reset! !running-notes ""))))
+     (d/transact! !conn
+                  [{:db/id        (e/snapshot running-interval-id)
+                    :interval/end now}
+                   {:db/id         (e/snapshot running-id)
+                    :task/interval (e/snapshot running-interval-id)}
+                   [:db/retract user-id :user/running-task]
+                   [:db/retract user-id :user/running-interval]]))))
+
+(e/defn RunSelectedTask []
+  (e/server
+   (let [now (System/currentTimeMillis)]
+     (d/transact! !conn
+                  (concat
+                   (when (e/snapshot running-id)
+                     [{:db/id        (e/snapshot running-interval-id)
+                       :interval/end now}
+                      {:db/id         (e/snapshot running-id)
+                       :task/interval (e/snapshot running-interval-id)}])
+                   [{:db/id                 user-id
+                     :user/running-task     (e/snapshot selected-id)
+                     :user/running-interval {:db/id          -1
+                                             :interval/start now
+                                             :interval/notes ""}}])))))
 
 #?(:clj
    (do
-     (defn stop-running-task []
-       (let [now (System/currentTimeMillis)]
-         (d/transact! !conn
-                      [{:db/id         @!running-id
-                        :task/interval {:db/id          -1
-                                        :interval/start @!running-start
-                                        :interval/end   now}}])
-         (reset! !running-id nil)
-         (reset! !running-start nil)
-         (reset! !running-notes "")))
-
      (comment
        (:task/interval
         (d/entity @!conn 26))
@@ -126,21 +116,7 @@
                                 [?e :task/interval]]
                               @conn)]
            (d/transact conn (mapv (fn [[e]] [:db/retract e :task/interval]) intervals))))
-       (delete-all-intervals !conn)
-       (def !running-history (u/make-history-atom !running-id))
-       ;; (tests
-       ;;  (d/get-ancestor-task-ids @!conn 5) := [1 2]
-       ;;  (set (d/get-descendant-task-ids @!conn 2)) := (set [4 5 7 8]))
-       )))
-
-(e/defn SVGHorizontalLine []
-  (svg/line (dom/props {:x1     0,       :x2           10
-                        :y1     5,       :y2           5
-                        :stroke "black", :stroke-width 1})))
-(e/defn SVGVerticalLine []
-  (svg/line (dom/props {:x1     5,       :x2           5
-                        :y1     0.2,     :y2           9.8
-                        :stroke "black", :stroke-width 1})))
+       (delete-all-intervals !conn))))
 
 (e/defn Toggle [task-id !toggled]
   (let [toggled (e/watch !toggled)]
@@ -153,51 +129,44 @@
       (svg/svg (dom/props {:width  10
                            :height 10})
                (when toggled
-                 (SVGVerticalLine.))
-               (SVGHorizontalLine.)))))
-
-(e/defn TaskActionButton [action text]
-  (ui/button
-    action
-    (dom/props {:class (tw "btn-[* xs]")})
-    (dom/on "click" (e/fn [e]
-                      (.stopPropagation e)))
-    (dom/text text)))
+                 ;; vertical line
+                 (svg/line (dom/props {:x1     5,       :x2           5
+                                       :y1     0.2,     :y2           9.8
+                                       :stroke "black", :stroke-width 1})))
+               ;; horizontal line
+               (svg/line (dom/props {:x1     0,       :x2           10
+                                     :y1     5,       :y2           5
+                                     :stroke "black", :stroke-width 1}))))))
 
 (e/defn TaskActionButtons [task-id]
   (dom/div
     (dom/props {:class "ml-1 flex"})
-    (TaskActionButton.
-     (e/fn []
-       (e/server
-        (tx/transact! !conn [{:db/id        task-id
-                              :task/subtask [{:db/id     -1
-                                              :task/name "~stub~"}]
-                              :task/toggled false}])))
-     "Add")
-    ;; (TaskActionButton.
-    ;;  (e/fn []
-    ;;    (when (and (not (e/server (:task/subtask (d/entity db task-id))))
-    ;;               (not (= task-id running-id)))
-    ;;      (e/server
-    ;;       (tx/transact! !conn [[:db.fn/retractEntity task-id]]))
-    ;;      (when (= task-id selected-id)
-    ;;        (reset! !selected-id nil))))
-    ;;  "Del")
-    (let [!edit-text (atom nil),
-          edit-text  (e/watch !edit-text)]
+    (ui/button
+      (e/fn []
+        (e/server
+         (tx/transact! !conn [{:db/id        task-id
+                               :task/subtask [{:db/id     -1
+                                               :task/name "~stub~"}]
+                               :task/toggled false}])))
+      (dom/props {:class (tw "btn-[* xs]")})
+      (dom/on "click" (e/fn [e] (.stopPropagation e)))
+      (dom/text "Add"))
+    (let [!edit-text (atom nil), edit-text (e/watch !edit-text)]
       (dom/div
         (dom/props {:class "flex"})
-        (TaskActionButton.
-         (e/fn []
-           (if @!edit-text
-             (do
-               (e/server (tx/transact! !conn [{:db/id task-id :task/name edit-text}]))
-               (reset! !edit-text nil))
-             (reset! !edit-text (e/server (:task/name (d/entity db task-id))))))
-         (if edit-text
-           "Confirm"
-           "Edit"))
+        (ui/button
+          (e/fn []
+            (if @!edit-text
+              (do
+                (e/server (tx/transact! !conn [{:db/id task-id :task/name edit-text}]))
+                (reset! !edit-text nil))
+              (reset! !edit-text (e/server (:task/name (d/entity db task-id))))))
+          (dom/props {:class (tw "btn-[* xs]")})
+          (dom/on "click" (e/fn [e] (.stopPropagation e)))
+          (dom/text
+           (if edit-text
+             "Confirm"
+             "Edit")))
         (when edit-text
           (ui/input
            edit-text
@@ -261,12 +230,12 @@
                        subtask-ids (e/server
                                     (sort (map :db/id (:task/subtask (d/entity db task-id)))))
                        !toggled    (atom nil)]
-                   (make-relay !toggled
-                               (:task/toggled (d/entity db task-id))
-                               (fn [v]
-                                 (tx/transact!
-                                  !conn [{:db/id task-id :task/toggled v}]))
-                               boolean?)
+                   (u/make-relay !toggled
+                                 (:task/toggled (d/entity db task-id))
+                                 (fn [v]
+                                   (tx/transact!
+                                    !conn [{:db/id task-id :task/toggled v}]))
+                                 boolean?)
                    (dom/div
                      (dom/props
                       {:class (tw "flex"
@@ -277,7 +246,8 @@
                          ;; for disabling double-click
                          (if (= selected-id task-id)
                            (when-not (= selected-id running-id)
-                             (RunSelectedTask.))
+                             (e/server
+                              (RunSelectedTask.)))
                            (reset! !selected-id task-id)))
                        (dom/props {:class "text-left flex"})
                        (dom/on "click"
@@ -403,22 +373,19 @@
         (e/fn []
           (e/server
            (if is-running
-             (stop-running-task)
+             (StopRunningTask.)
              (RunSelectedTask.))))
-        (dom/props {:class (tw
-                            "btn-[* xs] block bg-base-300 animation-none hover:bg-base-100")})
+        (dom/props {:class (tw "btn-[* xs] block bg-base-300"
+                               "animation-none hover:bg-base-100")})
         (dom/text
-         (if is-running "Stop" "Start")))
+         (if is-running
+           "Stop"
+           "Start")))
       (when is-running
         (ui/button
-          (e/fn []
-            (e/server
-             (reset! !running-id nil)
-             (reset! !running-start nil)
-             (reset! !running-notes "")
-             (swap! !running-history drop-last)))
-          (dom/props {:class (tw
-                              "btn-[* xs] block bg-base-300 animation-none hover:bg-base-100")})
+          (e/fn [] (CancelRunningTask.))
+          (dom/props {:class (tw "btn-[* xs] block bg-base-300"
+                                 "animation-none hover:bg-base-100")})
           (dom/text "Cancel"))))))
 
 #?(:cljs (defn value [^js e] (.-target.value e))) ; workaround inference warnings, todo rename
@@ -481,64 +448,41 @@
                    " ~ "
                    (to-date end))))))
           (textarea*
-           (e/server (e/watch !running-notes))
+           running-notes
            (e/fn [v]
-             (e/server (reset! !running-notes v)))
+             (e/server
+              (tx/transact! !conn [{:db/id          running-interval-id
+                                    :interval/notes v}])))
            (dom/style {:background-color "bg-base-200"})
-           (dom/props {:class (tw "textarea-[* md primary] text-lg mt-2 w-full max-w-lg h-[500px] focus:outline-none"
+           (dom/props {:class (tw "textarea-[* md primary] text-lg mt-2"
+                                  "w-full max-w-lg h-[500px] focus:outline-none"
                                   (when-not (= selected-id running-id)
                                     "hidden"))}))))
       (dom/text "Select any task."))))
 
-(e/defn TestPanel []
-  (dom/div
-    (dom/props {:class "p-4 bg-base-200 rounded-lg"})
-    (dom/div
-      (dom/text "cbdc"))
-    (let [a 2]
-      (dom/text "abcd" a))))
-
-#?(:clj
-   (defmacro sync-binding
-     "Does binding in both server and client scope. Make sure to explicitly specify the scope in bindings (e.g. e/client or e/server). Body is evaluated in client scope."
-     {:style/indent 1}
-     [bindings & body]
-     `(e/server
-       (binding ~bindings
-         (e/client
-          (binding ~bindings
-            ~@body))))))
-
+(e/def some-value (e/server (:value (d/entity (e/watch !conn) 1000))))
 (e/defn PushApp []
   (e/server
-   (let [session-id (get-in e/*http-request* [:headers "sec-websocket-key"])
-         username   (get-in e/*http-request* [:cookies "username" :value])]
-     (binding [db (e/watch !conn)]
-       (e/client
-        (if-not (some? username)
-          (dom/div
-            (dom/text "Set login cookie here: ")
-            (dom/a (dom/props {::dom/href "/auth"
-                               :class     "text-green-500"})
-                   (dom/text "/auth"))
-            (dom/text " (blank password)"))
-          (do
+   (binding [db (e/watch !conn)]
+     (e/client
+      (if-not (some? username)
+        (dom/div
+          (dom/text "Set login cookie here: ")
+          (dom/a (dom/props {::dom/href "/auth"
+                             :class     "text-green-500"})
+                 (dom/text "/auth"))
+          (dom/text " (blank password)"))
+        (do
+          (when-not user-id
             (e/server
-             (when (nil? (d/entity db [:user/username username]))
-               (tx/transact! !conn [{:db/id -1 :user/username username}])))
-            (e/server
-             (swap! !present assoc session-id username)
-             (e/on-unmount #(swap! !present dissoc session-id)))
-            (dom/div (dom/text username))
-            (e/server
-             (sync-binding [user-id (e/server
-                                     (:db/id (d/entity db [:user/username username])))]
-               ;; now user-id is visible for both client and server scope
-               (when user-id
-                 (dom/div
-                   (dom/props {:class "m-10 sm:flex h-fit min-w-[14rem]"})
-                   (dom/style {:touch-action "manipulation"})
-                   (dom/text user-id)
-                   (dom/text (e/server user-id))
-                   (TasksPanel.)
-                   (SelectedPanel.))))))))))))
+             (tx/transact! !conn [{:db/id -1 :user/username username}])))
+          (e/server
+           (swap! !present assoc session-id username)
+           (e/on-unmount #(swap! !present dissoc session-id)))
+          (dom/div (dom/text "[" user-id "] " username))
+          (when user-id
+            (dom/div
+              (dom/props {:class "m-10 sm:flex h-fit min-w-[14rem]"})
+              (dom/style {:touch-action "manipulation"})
+              (TasksPanel.)
+              (SelectedPanel.)))))))))
