@@ -198,22 +198,78 @@
 
 #?(:clj
    (defmacro make-relay-task
-     "attr should be keyword, like :task/time-group. optional default."
-     ([ref task-id attr pred]
-      `(make-relay-task ~ref ~task-id ~attr ~pred nil))
-     ([ref task-id attr pred default]
-      `(make-relay
-        ~ref
-        ;; ~default
-        (if ~default
-          (or (~attr (d/entity ~'db ~task-id))
-              ~default)
-          (~attr (d/entity ~'db ~task-id)))
-        (fn [v#]
-          (tx/transact! ~'!conn
-                        [{:db/id ~task-id
-                          ~attr  v#}]))
-        ~pred))))
+     [ref selected-task-id attr]
+     `(let [!last-sent          (atom :null)
+            !ignore-one         (atom true)
+            !selected-id-change (atom true)]
+        (e/for-event
+         [id# (e/fn [] ~selected-task-id)]
+         ;; (js/console.log "Selected task change: " id#)
+         (reset! ~ref (e/server (~attr (d/entity ~'db id#))))
+         (reset! !selected-id-change true))
+
+        (e/for-event
+         [v# (e/fn [] (e/watch ~ref))]
+         ;; (js/console.log "Changed " ~(name attr) ":" v#)
+         (cond @!ignore-one
+               (do
+                 ;; (js/console.log "Ignoring one")
+                 (reset! !ignore-one false))
+               @!selected-id-change
+               (reset! !selected-id-change false)
+               :else
+               (do
+                 ;; (js/console.log "Sending to server")
+                 (reset! !last-sent v#)
+                 (e/server
+                  (tx/transact! ~'!conn [{:db/id
+                                          (e/snapshot ~selected-task-id)
+                                          ~attr v#}])))))
+
+        (e/for-event
+         [v# (e/fn [] (e/server (~attr
+                                 (d/entity ~'db ~selected-task-id))))]
+         (when (and (not (= v# @!last-sent))
+                    (not @!selected-id-change))
+           ;; (js/console.log "Received " ~(name attr) ":" v#)
+           (reset! !ignore-one true)
+           (reset! ~ref v#))
+         (reset! !selected-id-change false)
+         (reset! !last-sent :null)))))
+;; (let [!last-sent          (atom :null)
+;;       !ignore-one         (atom true)
+;;       !selected-id-change (atom true)]
+;;   (e/for-event
+;;    [id (e/fn [] selected-task-id)]
+;;    (js/console.log "Selected task change: " id)
+;;    (reset! !history-show (e/server (:task/history-show
+;;                                     (d/entity db (e/snapshot selected-task-id)))))
+;;    (reset! !selected-id-change true))
+;;   (e/for-event
+;;    [v (e/fn [] history-show)]
+;;    (js/console.log "Changed history-show: " v)
+;;    (cond @!ignore-one
+;;          (do
+;;            (js/console.log "Ignoring one")
+;;            (reset! !ignore-one false))
+;;          :else
+;;          (do
+;;            (js/console.log "Sending to server")
+;;            (reset! !last-sent v)
+;;            (e/server
+;;             (tx/transact! !conn [{:db/id
+;;                                   (e/snapshot selected-task-id)
+;;                                   :task/history-show v}])))))
+;;   (e/for-event
+;;    [v (e/fn [] (e/server (:task/history-show
+;;                           (d/entity db selected-task-id))))]
+;;    (when (and (not (= v @!last-sent))
+;;               (not @!selected-id-change))
+;;      (js/console.log "Received history-show: " v)
+;;      (reset! !ignore-one true)
+;;      (reset! !history-show v))
+;;    (reset! !selected-id-change false)
+;;    (reset! !last-sent :null)))
 
 (comment
   (tests
