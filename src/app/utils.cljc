@@ -1,7 +1,8 @@
 ;; {:nextjournal.clerk/visibility {:code :hide :result :hide}}
 
 (ns app.utils
-  #?(:cljs (:require-macros [app.utils :refer [make-relay textarea* make-relay-task]]))
+  #?(:cljs (:require-macros [app.utils :refer [make-relay textarea*
+                                               make-relay-task]]))
   (:require
    #?(:cljs
       [goog.string :as gstring])
@@ -236,6 +237,7 @@
            (reset! ~ref v#))
          (reset! !selected-id-change false)
          (reset! !last-sent :null)))))
+
 ;; (let [!last-sent          (atom :null)
 ;;       !ignore-one         (atom true)
 ;;       !selected-id-change (atom true)]

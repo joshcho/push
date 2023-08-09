@@ -2,15 +2,12 @@
   (:import [hyperfiddle.electric Pending]
            #?(:clj [java.time Duration Instant]))
   (:require
-   ;; when you switch this, make sure to switch tx.clj and db.clj, too
    #?(:clj [datalevin.core :as d])
-   ;; #?(:clj [datascript.core :as d])
    [app.utils :as u]
    [app.tailwind :refer [tw]]
    #?(:clj [app.tx :as tx])
    #?(:clj [app.db :as db])
    [hyperfiddle.electric :as e]
-   [goog.object :as gobj]
    [hyperfiddle.electric-dom2 :as dom]
    [hyperfiddle.electric-ui4 :as ui]
    [hyperfiddle.electric-svg :as svg]
@@ -19,23 +16,18 @@
    ;;    [clojure.tools.macro :as macro])
    [missionary.core :as m]
    [contrib.data :refer [nil-or-empty?]]
-   ["dayjs" :as dayjs]
-   ["dayjs/plugin/utc" :as utc]
-   ["dayjs/plugin/timezone" :as timezone]
-   ["dayjs/plugin/localizedFormat" :as localizedFormat]
-   ["dayjs/plugin/advancedFormat" :as advancedFormat]
-   ;; #?(:cljs d3)
-   ))
+   #?(:cljs ["dayjs" :as dayjs])
+   #?(:cljs ["dayjs/plugin/utc" :as utc])
+   #?(:cljs ["dayjs/plugin/timezone" :as timezone])
+   #?(:cljs ["dayjs/plugin/localizedFormat" :as localizedFormat])
+   #?(:cljs ["dayjs/plugin/advancedFormat" :as advancedFormat])))
+
 #?(:cljs
    (do
      (.extend dayjs utc)
      (.extend dayjs timezone)
      (.extend dayjs localizedFormat)
-     (.extend dayjs advancedFormat)
-     ;; (gobj/extend (gobj/extend dayjs utc)
-     ;;   timezone)
-     ;; (gobj/extend dayjs timezone)
-     ))
+     (.extend dayjs advancedFormat)))
 
 #?(:clj
    (do
@@ -46,7 +38,6 @@
                                               :db/valueType   :db.type/ref}
                       :user/running-task     {:db/valueType :db.type/ref}
                       :user/running-interval {:db/valueType :db.type/ref}
-                      ;; :user/running-history  {}
                       :task/subtask          {:db/cardinality :db.cardinality/many
                                               :db/valueType   :db.type/ref}
                       :task/name             {}
@@ -435,24 +426,6 @@
                                  "animation-none hover:bg-base-100")})
           (dom/text "Cancel"))))))
 
-(defn time-partition-by-range
-  ([n lst keyfn timezone-offset]
-   (let [add-range (fn [x] [x (* n (int (/ (+ (keyfn x) timezone-offset) n)))])]
-     (->> lst
-          (map add-range)
-          (group-by second)
-          vals
-          (map #(map first %))))))
-
-(defn ordinal-suffix [n]
-  (let [tens  (mod n 10)
-        hunds (mod n 100)]
-    (cond
-      (== tens 1) (if (== hunds 11) "th" "st")
-      (== tens 2) (if (== hunds 12) "th" "nd")
-      (== tens 3) (if (== hunds 13) "th" "rd")
-      :else       "th")))
-
 (defn tz-dayjs
   ([x]
    #?(:cljs
@@ -530,12 +503,12 @@
                                                             :interval/note]))))
                   !history-show (atom true),  history-show (e/watch !history-show)
                   !time-group   (atom :hour), time-group   (e/watch !time-group)
-                  !show-full    (atom true),  show-full    (e/watch !show-full)
-                  ]
+                  !show-full    (atom true),  show-full    (e/watch !show-full)]
               ;; (dom/div
               ;;   (dom/text history-show)
               ;;   (dom/text
               ;;    (e/server (:task/history-show (d/entity db selected-task-id)))))
+
               (u/make-relay-task !history-show selected-task-id :task/history-show)
               (u/make-relay-task !time-group selected-task-id :task/time-group)
               (u/make-relay-task !show-full selected-task-id :task/show-full)
@@ -578,62 +551,61 @@
               (when (not (nil-or-empty? past-notes))
                 (dom/div
                   (dom/props {:class (tw "flex-[* col] gap-3 mb-2"
-                                         (when-not show-full
+                                         (when (and (not show-full)
+                                                    (= selected-task-id
+                                                       running-task-id))
                                            "max-h-96 overflow-auto")
                                          (when-not history-show
                                            "hidden"))})
-                  (let [time-range
-                        (case time-group
-                          :hour (* 60 60 1000)
-                          :day  (* 60 60 60 1000)
-                          (* 60 60 60 1000))
-                        time-offset (* 16 60 60 1000) ; KST
-                        ]
-                    (e/for [[range-time same-range-note-maps]
-                            (group-by
-                             #(.format
-                               (tz-dayjs (:interval/start %))
-                               ;; L is MM/DD/YYYY
-                               (cond (= time-group :hour)  "L HH:00"
-                                     (= time-group :day)   "L"
-                                     (= time-group :month) "MMMM YYYY"
-                                     :else                 "L"))
-                             past-notes)]
-                      (when-not (nil-or-empty? same-range-note-maps)
-                        (dom/div
-                          (dom/text
-                           (cond (and (u/in? [:hour :day] time-group)
-                                      (= (.format (tz-dayjs e/system-time-ms) "L")
-                                         (.format (new-dayjs range-time) "L")))
-                                 (str "Today"
-                                      (when (= time-group :hour)
-                                        (str " at "
-                                             (.format (new-dayjs range-time) " h A"))))
-                                 (and (u/in? [:hour :day] time-group)
-                                      (= (.format (.subtract
-                                                   (tz-dayjs e/system-time-ms)
-                                                   1 "day") "L")
-                                         (.format (new-dayjs range-time) "L")))
-                                 (str "Yesterday"
-                                      (when (= time-group :hour)
-                                        (str " at "
-                                             (.format (new-dayjs range-time) " h A"))))
-                                 :else
-                                 (.format (new-dayjs range-time)
-                                          (case time-group
-                                            :hour  "MMMM Do h A"
-                                            :day   "MMMM Do"
-                                            :month "MMMM YYYY"
-                                            "MMMM Do")))))
-                        (dom/div
-                          (dom/props {:class (tw "bg-base-100 card py-[2px] px-3")})
-                          (e/for [note (map :interval/note same-range-note-maps)]
+                  (e/for [[range-time same-range-note-maps]
+                          (group-by
+                           #(.format
+                             (tz-dayjs (:interval/start %))
+                             ;; L is MM/DD/YYYY
+                             ;; these formats do the following:
+                             ;; 1) checking if same hour/day/month
+                             ;; 2) possibility of reverting on .dayjs call
+                             (cond (= time-group :hour)  "L HH:00"
+                                   (= time-group :day)   "L"
+                                   (= time-group :month) "MMMM YYYY"
+                                   :else                 "L"))
+                           past-notes)]
+                    (when-not (nil-or-empty? same-range-note-maps)
+                      (dom/div
+                        (dom/text
+                         (cond (and (u/in? [:hour :day] time-group)
+                                    (= (.format (tz-dayjs e/system-time-ms) "L")
+                                       (.format (new-dayjs range-time) "L")))
+                               (str "Today"
+                                    (when (= time-group :hour)
+                                      (str " at "
+                                           (.format (new-dayjs range-time) " h A"))))
+                               (and (u/in? [:hour :day] time-group)
+                                    (= (.format (.subtract
+                                                 (tz-dayjs e/system-time-ms)
+                                                 1 "day") "L")
+                                       (.format (new-dayjs range-time) "L")))
+                               (str "Yesterday"
+                                    (when (= time-group :hour)
+                                      (str " at "
+                                           (.format (new-dayjs range-time) " h A"))))
+                               :else
+                               (.format (new-dayjs range-time)
+                                        (case time-group
+                                          :hour  "MMMM Do h A"
+                                          :day   "MMMM Do"
+                                          :month "MMMM YYYY"
+                                          "MMMM Do")))))
+                      (dom/div
+                        (dom/props {:class (tw "bg-base-100 card py-[4px] px-3")})
+                        (e/for [note (map :interval/note same-range-note-maps)]
+                          (dom/div
+                            ;; (dom/props {:class
+                            ;;             (tw "border-[b gray-400] last:border-b-0")})
                             (dom/div
-                              (dom/props {:class
-                                          (tw "border-[b gray-400] last:border-b-0")})
-                              (dom/div
-                                (dom/props {:class "card-body p-2 whitespace-pre-line"})
-                                (dom/text note))))))))))))
+                              (dom/props {:class (tw "card-body p-[2px]"
+                                                     "whitespace-pre-line")})
+                              (dom/text note)))))))))))
           (u/textarea*
            running-note
            (e/fn [v]
@@ -649,11 +621,11 @@
       (dom/text "Select any task."))))
 
 (e/def some-value (e/server (:value (d/entity (e/watch !conn) 1000))))
+
 (e/defn PushApp []
   (e/server
    (binding [db (e/watch !conn)]
      (e/client
-      ;; (dom/text running-history)
       (if-not (some? username)
         (dom/div
           (dom/text "Set login cookie here: ")
