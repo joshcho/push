@@ -22,12 +22,16 @@
    ["dayjs" :as dayjs]
    ["dayjs/plugin/utc" :as utc]
    ["dayjs/plugin/timezone" :as timezone]
+   ["dayjs/plugin/localizedFormat" :as localizedFormat]
+   ["dayjs/plugin/advancedFormat" :as advancedFormat]
    ;; #?(:cljs d3)
    ))
 #?(:cljs
    (do
      (.extend dayjs utc)
      (.extend dayjs timezone)
+     (.extend dayjs localizedFormat)
+     (.extend dayjs advancedFormat)
      ;; (gobj/extend (gobj/extend dayjs utc)
      ;;   timezone)
      ;; (gobj/extend dayjs timezone)
@@ -88,6 +92,8 @@
 (e/def running-interval-id (e/server (->> running-interval :db/id)))
 (e/def running-start (e/server (->> running-interval :interval/start)))
 (e/def running-note (e/server (->> running-interval :interval/note)))
+#?(:cljs
+   (def timezone "Asia/Seoul"))
 
 #?(:clj
    (do
@@ -443,6 +449,14 @@
       (== tens 3) (if (== hunds 13) "th" "rd")
       :else       "th")))
 
+#?(:cljs
+   (defn new-dayjs [x]
+     (new dayjs x)))
+
+#?(:cljs
+   (defn map-vals [f m]
+     (into {} (for [[k v] m] [k (f v)]))))
+
 (e/defn SelectedPanel []
   (dom/div
     (dom/props {:class "grow pl-2 py-2 pr-4 sm:ml-2 rounded bg-base-200 sm:min-h-full"})
@@ -552,77 +566,19 @@
                           (* 60 60 60 1000))
                         time-offset (* 16 60 60 1000) ; KST
                         ]
-                    (e/for [same-range-note-maps
-                            (time-partition-by-range
-                             time-range past-notes :interval/start
-                             time-offset
-                             )]
+                    ;; (dom/text (map #(time-round % :month) [123 221322324]))
+                    ;; (dom/text (map #(time-round % :day) [123 221322324]))
+                    ;; (dom/text (map #(time-round % :hour) [123 2213212332324]))
+                    (e/for [[display-str same-range-note-maps]
+                            (->> past-notes
+                                 (group-by #(.format (new-dayjs (:interval/start %))
+                                                     (case time-group
+                                                       :hour  "MMMM Do h A"
+                                                       :day   "MMMM Do"
+                                                       :month "MMMM YYYY"
+                                                       "MMMM Do"))))]
                       (when-not (nil-or-empty? same-range-note-maps)
-                        (let [time-range-start
-                              (* (int
-                                  (/ (+ (:interval/start
-                                         (first same-range-note-maps))
-                                        time-offset)
-                                     time-range))
-                                 time-range)]
-                          (dom/div
-                            ;; (dom/text (dayjs/tz time-range-start
-                            ;;                     "Asia/Seoul"))
-                            ;; (dom/text (dayjs/tz e/system-time-ms "Asia/Seoul"))
-                            ;; (dom/text (dayjs/tz e/system-time-ms "America/New_York"))
-                            ;; (dom/text (dayjs/tz (dayjs e/system-time-ms)
-                            ;;                     "America/New_York"))
-                            ;; (dom/text (.tz (dayjs "2013-11-18 11:55:20")
-                            ;;                "Asia/Seoul"))
-                            ;; (dom/text (.tz (dayjs (clj->js "2013-11-18 11:55:20"))
-                            ;;                "America/New_York"))
-                            ;; (dom/text (.tz (dayjs (clj->js "2013-11-18 11:55:20"))
-                            ;;                "Asia/Seoul"))
-                            ;; (dom/text (dayjs e/system-time-ms))
-                            (let [current-time (dayjs e/system-time-ms)]
-                              ;; (dom/text (dayjs/tz current-time "Asia/Seoul"))
-                              ;; (dom/text (dayjs/tz current-time "America/New_York"))
-                              ;; (dom/text (.tz current-time "Asia/Seoul"))
-                              ;; (dom/text (.tz current-time "America/New_York"))
-                              ;; (dom/text (.tz (dayjs "2014-06-01 12:00")
-                              ;;                "Asia/Seoul"))
-                              ;; (dom/text (.tz (dayjs "2014-06-01 12:00")
-                              ;;                "America/New_York"))
-                              (dom/text (dayjs current-time))
-                              ;; (dom/text (dayjs/tz (dayjs current-time)
-                              ;;                     "Asia/Seoul"))
-                              ;; (js/console.log (dayjs (e/snapshot current-time)))
-                              ;; (js/console.log (.tz (clj->js (dayjs (e/snapshot current-time)))
-                              ;;                      "Asia/Seoul"))
-                              ;; (js/console.log (.tz (clj->js (dayjs (e/snapshot current-time)))
-                              ;;                      "Asia/Seoul"))
-                              (js/console.log (.tz (dayjs (e/snapshot current-time))
-                                                   "Asia/Seoul"))
-                              (js/console.log (.tz (dayjs (e/snapshot current-time))
-                                                   "America/New_York"))
-                              ;; (dom/text (js->clj (dayjs current-time)))
-                              ;; (dom/text (js->clj (dayjs current-time)))
-                              ;; (dom/text (js/object? (dayjs current-time)))
-                              ;; (dom/text (dayjs/tz "2014-06-01 12:00"
-                              ;;                     "Asia/Seoul"))
-                              ;; (dom/text (dayjs/tz "2014-06-01 12:00"
-                              ;;                     "America/New_York"))
-                              )
-                            (dom/text
-                             (let [date    (js/Date. time-range-start)
-                                   options (clj->js
-                                            (case time-group
-                                              :hour  {:month "long"
-                                                      :day   "numeric"
-                                                      :hour  "numeric"
-                                                      }
-                                              :day   {:month "long"
-                                                      :day   "numeric"}
-                                              :month {:month "long"}))]
-                               (str
-                                (.toLocaleDateString date "en-US" options)
-                                (when (= time-group :day)
-                                  (ordinal-suffix (.getUTCDate date))))))))
+                        (dom/div (dom/text display-str))
                         (dom/div
                           (dom/props {:class (tw "bg-base-100 card py-[2px] px-3")})
                           (e/for [note (map :interval/note same-range-note-maps)]
