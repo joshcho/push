@@ -1,7 +1,7 @@
 ;; {:nextjournal.clerk/visibility {:code :hide :result :hide}}
 
 (ns app.utils
-  #?(:cljs (:require-macros [app.utils :refer [make-relay textarea*]]))
+  #?(:cljs (:require-macros [app.utils :refer [make-relay textarea* make-relay-task]]))
   (:require
    #?(:cljs
       [goog.string :as gstring])
@@ -13,6 +13,7 @@
    [hyperfiddle.electric :as e]
    [hyperfiddle.electric-dom2 :as dom]
    [missionary.core :as m]
+   #?(:clj [app.tx :as tx])
    ;; #?(:clj nextjournal.clerk)
    ;; #?(:cljs
    ;;    [app.render])
@@ -194,6 +195,25 @@
         (let [server-value (e/server ~server-value)]
           (when (~pred server-value)
             (reset! !client-value server-value))))))
+
+#?(:clj
+   (defmacro make-relay-task
+     "attr should be keyword, like :task/time-group. optional default."
+     ([ref task-id attr pred]
+      `(make-relay-task ~ref ~task-id ~attr ~pred nil))
+     ([ref task-id attr pred default]
+      `(make-relay
+        ~ref
+        ;; ~default
+        (if ~default
+          (or (~attr (d/entity ~'db ~task-id))
+              ~default)
+          (~attr (d/entity ~'db ~task-id)))
+        (fn [v#]
+          (tx/transact! ~'!conn
+                        [{:db/id ~task-id
+                          ~attr  v#}]))
+        ~pred))))
 
 (comment
   (tests

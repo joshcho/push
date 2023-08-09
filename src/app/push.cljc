@@ -10,14 +10,28 @@
    #?(:clj [app.tx :as tx])
    #?(:clj [app.db :as db])
    [hyperfiddle.electric :as e]
+   [goog.object :as gobj]
    [hyperfiddle.electric-dom2 :as dom]
    [hyperfiddle.electric-ui4 :as ui]
    [hyperfiddle.electric-svg :as svg]
    [hyperfiddle.rcf :refer [tests]]
+   ;; #?(:clj
+   ;;    [clojure.tools.macro :as macro])
    [missionary.core :as m]
    [contrib.data :refer [nil-or-empty?]]
+   ["dayjs" :as dayjs]
+   ["dayjs/plugin/utc" :as utc]
+   ["dayjs/plugin/timezone" :as timezone]
    ;; #?(:cljs d3)
    ))
+#?(:cljs
+   (do
+     (.extend dayjs utc)
+     (.extend dayjs timezone)
+     ;; (gobj/extend (gobj/extend dayjs utc)
+     ;;   timezone)
+     ;; (gobj/extend dayjs timezone)
+     ))
 
 #?(:clj
    (do
@@ -111,37 +125,37 @@
 
 (e/defn CancelRunningTask []
   (e/server
-   (d/transact! !conn
-                [[:db/retract user-id :user/running-task]
-                 [:db/retract user-id :user/running-interval]])))
+   (tx/transact! !conn
+                 [[:db/retract user-id :user/running-task]
+                  [:db/retract user-id :user/running-interval]])))
 
 (e/defn StopRunningTask []
   ;; when you refactor this, refactor RunSelectedTask
   (e/server
    (let [now (System/currentTimeMillis)]
-     (d/transact! !conn
-                  [{:db/id        (e/snapshot running-interval-id)
-                    :interval/end now}
-                   {:db/id         (e/snapshot running-task-id)
-                    :task/interval (e/snapshot running-interval-id)}
-                   [:db/retract user-id :user/running-task]
-                   [:db/retract user-id :user/running-interval]]))))
+     (tx/transact! !conn
+                   [{:db/id        (e/snapshot running-interval-id)
+                     :interval/end now}
+                    {:db/id         (e/snapshot running-task-id)
+                     :task/interval (e/snapshot running-interval-id)}
+                    [:db/retract user-id :user/running-task]
+                    [:db/retract user-id :user/running-interval]]))))
 
 (e/defn RunSelectedTask []
   (e/server
    (let [now (System/currentTimeMillis)]
-     (d/transact! !conn
-                  (concat
-                   (when (e/snapshot running-task-id)
-                     [{:db/id        (e/snapshot running-interval-id)
-                       :interval/end now}
-                      {:db/id         (e/snapshot running-task-id)
-                       :task/interval (e/snapshot running-interval-id)}])
-                   [{:db/id                 user-id
-                     :user/running-task     (e/snapshot selected-task-id)
-                     :user/running-interval {:db/id          -1
-                                             :interval/start now
-                                             :interval/note  ""}}])))))
+     (tx/transact! !conn
+                   (concat
+                    (when (e/snapshot running-task-id)
+                      [{:db/id        (e/snapshot running-interval-id)
+                        :interval/end now}
+                       {:db/id         (e/snapshot running-task-id)
+                        :task/interval (e/snapshot running-interval-id)}])
+                    [{:db/id                 user-id
+                      :user/running-task     (e/snapshot selected-task-id)
+                      :user/running-interval {:db/id          -1
+                                              :interval/start now
+                                              :interval/note  ""}}])))))
 
 (e/defn Toggle [task-id !toggled]
   (let [toggled (e/watch !toggled)]
@@ -225,7 +239,7 @@
 (e/def TaskList)
 (e/defn TasksPanel []
   (dom/div
-    (dom/props {:class "grow sm:max-w-[200px] min-h-[14rem] sm:min-h-[18rem] min-h-full sm:h-none mb-2 sm:mb-0 p-2 rounded bg-base-200"})
+    (dom/props {:class "grow sm:min-w-[250px] sm:max-w-[250px] min-h-[14rem] sm:min-h-[18rem] min-h-full sm:h-none mb-2 sm:mb-0 p-2 rounded bg-base-200"})
     ;; (dom/on "click"
     ;;         (e/fn [e]
     ;;           (reset! !selected-task-id nil)))
@@ -256,12 +270,7 @@
                        subtask-ids (e/server
                                     (sort (map :db/id (:task/subtask (d/entity db task-id)))))
                        !toggled    (atom nil)]
-                   (u/make-relay !toggled
-                                 (:task/toggled (d/entity db task-id))
-                                 (fn [v]
-                                   (tx/transact!
-                                    !conn [{:db/id task-id :task/toggled v}]))
-                                 boolean?)
+                   (u/make-relay-task !toggled task-id :task/toggled boolean?)
                    (dom/div
                      (dom/props
                       {:class (tw "flex justify-between"
@@ -364,9 +373,10 @@
   (let [ancestor-task-ids   (e/server (db/get-ancestor-task-ids db running-task-id))
         descendant-task-ids (e/server (db/get-descendant-task-ids db running-task-id))]
     (dom/div
-      (dom/props {:class "text-sm mt-[2px]"})
+      (dom/props {:class "text-sm"})
       (cond (u/in? ancestor-task-ids selected-task-id)
             (dom/div
+              (dom/props {:class "mt-[2px]"})
               (dom/text "Ancestor of currently running ")
               (SelectTaskButton. running-task-id
                                  {:class "text-xs italic"}))
@@ -377,14 +387,17 @@
                             (int
                              (/ (- e/system-time-ms running-start)
                                 1000)))]
-              (if (= duration 0)
-                (dom/text "Starting "
-                          (e/server
-                           (-> (d/entity db selected-task-id)
-                               :task/name)))
-                (dom/text "Elapsed for " duration " s")))
+              (dom/div
+                (dom/props {:class "mt-[2px]"})
+                (if (= duration 0)
+                  (dom/text "Starting "
+                            (e/server
+                             (-> (d/entity db selected-task-id)
+                                 :task/name)))
+                  (dom/text "Elapsed for " duration " s"))))
             (u/in? descendant-task-ids selected-task-id)
             (dom/div
+              (dom/props {:class "mt-[2px]"})
               (dom/text "Descendant of currently running ")
               (SelectTaskButton. running-task-id
                                  {:class "text-xs italic"}))))))
@@ -412,11 +425,9 @@
                                  "animation-none hover:bg-base-100")})
           (dom/text "Cancel"))))))
 
-(defn partition-by-range
-  ([n lst]
-   (partition-by-range n lst identity))
-  ([n lst keyfn]
-   (let [add-range (fn [x] [x (* n (int (/ (keyfn x) n)))])]
+(defn time-partition-by-range
+  ([n lst keyfn timezone-offset]
+   (let [add-range (fn [x] [x (* n (int (/ (+ (keyfn x) timezone-offset) n)))])]
      (->> lst
           (map add-range)
           (group-by second)
@@ -475,95 +486,136 @@
           ;;          " ~ "
           ;;          (to-date end))))))
           (dom/div
-            (dom/props {:class (tw "flex-[* col] gap-3 my-2")})
-            (let [past-note-ids (e/server
+            (dom/props {:class (tw "flex-[* col] gap-3 mt-1 mb-2")})
+            (let [past-notes    (e/server
                                  (->> (d/entity db selected-task-id)
                                       :task/interval
                                       (sort-by :interval/start)
                                       (remove #(nil-or-empty? (:interval/note %)))
                                       (map #(select-keys % [:db/id :interval/start
                                                             :interval/note]))))
-                  history-show  (e/server (:task/history-show
-                                           (d/entity db selected-task-id)))
-                  time-group    (e/server (or (:task/time-group
-                                               (d/entity db selected-task-id))
-                                              :day))
-                  show-full     (e/server (:task/show-full
-                                           (d/entity db selected-task-id)))]
-              ;; (dom/text past-note-ids)
-              (when-not (nil-or-empty? past-note-ids)
+                  !history-show (atom nil), history-show (e/watch !history-show)
+                  !time-group   (atom nil), time-group   (e/watch !time-group)
+                  !show-full    (atom nil), show-full    (e/watch !show-full)]
+              (u/make-relay-task !history-show selected-task-id :task/history-show
+                                 boolean?)
+              (u/make-relay-task !time-group selected-task-id :task/time-group
+                                 keyword? :day)
+              (u/make-relay-task !show-full selected-task-id :task/show-full
+                                 boolean?)
+              (when-not (nil-or-empty? past-notes)
                 (dom/div
-                  (dom/props {:class "flex gap-2"})
+                  (dom/props {:class (tw "flex gap-2")})
                   (ui/button
-                    (e/fn []
-                      (e/server
-                       (tx/transact! !conn
-                                     [{:db/id selected-task-id
-                                       :task/history-show
-                                       (not (e/snapshot history-show))}])))
+                    (e/fn [] (swap! !history-show not))
                     (dom/props {:class (tw "btn-[* xs] bg-base-300 hover:bg-base-100")})
                     (dom/text
                      (if history-show
                        "hide past notes"
                        "show past notes")))
-                  (ui/button
-                    (e/fn []
-                      (e/server
-                       (tx/transact! !conn
-                                     [{:db/id selected-task-id
-                                       :task/time-group
-                                       (case (e/snapshot time-group)
-                                         :hour  :day
-                                         :day   :month
-                                         :month :hour)}])))
-                    (dom/props {:class (tw "btn-[* xs] bg-base-300 hover:bg-base-100")})
-                    (dom/text (str "group by "
-                                   (name (case time-group
-                                           :hour  :day
-                                           :day   :month
-                                           :month :hour)))))
-                  (ui/button
-                    (e/fn []
-                      (e/server
-                       (tx/transact! !conn
-                                     [{:db/id selected-task-id
-                                       :task/show-full
-                                       (not (e/snapshot show-full))}])))
-                    (dom/props {:class (tw "btn-[* xs] bg-base-300 hover:bg-base-100")})
-                    (dom/text
-                     (if show-full
-                       "show short"
-                       "show full")))))
-              (when (and history-show (not (nil-or-empty? past-note-ids)))
+                  (when history-show
+                    (ui/button
+                      (e/fn []
+                        (swap! !time-group (fn [tg]
+                                             (cond (= tg :hour)
+                                                   :day
+                                                   (= tg :day)
+                                                   :month
+                                                   (= tg :month)
+                                                   :hour
+                                                   :else :day))))
+                      (dom/props {:class (tw "btn-[* xs] bg-base-300 hover:bg-base-100")})
+                      (dom/text (str "group by "
+                                     (name
+                                      (case time-group
+                                        :hour  :day
+                                        :day   :month
+                                        :month :hour)))))
+                    (ui/button
+                      (e/fn [] (swap! !show-full not))
+                      (dom/props {:class (tw "btn-[* xs] bg-base-300 hover:bg-base-100")})
+                      (dom/text
+                       (if show-full
+                         "show short"
+                         "show full"))))))
+              (when (not (nil-or-empty? past-notes))
                 (dom/div
                   (dom/props {:class (tw "flex-[* col] gap-3 mb-2"
                                          (when-not show-full
-                                           "max-h-96 overflow-auto"))})
-                  ;; (set! (.-scrollTop dom/node)
-                  ;;       (.-scrollHeight dom/node))
+                                           "max-h-96 overflow-auto")
+                                         (when-not history-show
+                                           "hidden"))})
                   (let [time-range
                         (case time-group
                           :hour (* 60 60 1000)
                           :day  (* 60 60 60 1000)
-                          (* 60 60 60 1000))]
+                          (* 60 60 60 1000))
+                        time-offset (* 16 60 60 1000) ; KST
+                        ]
                     (e/for [same-range-note-maps
-                            (partition-by-range time-range
-                                                past-note-ids :interval/start)]
+                            (time-partition-by-range
+                             time-range past-notes :interval/start
+                             time-offset
+                             )]
                       (when-not (nil-or-empty? same-range-note-maps)
-                        (let [time-range-start (* (js/Math.round
-                                                   (/ (:interval/start
-                                                       (first same-range-note-maps))
-                                                      time-range))
-                                                  time-range)]
+                        (let [time-range-start
+                              (* (int
+                                  (/ (+ (:interval/start
+                                         (first same-range-note-maps))
+                                        time-offset)
+                                     time-range))
+                                 time-range)]
                           (dom/div
+                            ;; (dom/text (dayjs/tz time-range-start
+                            ;;                     "Asia/Seoul"))
+                            ;; (dom/text (dayjs/tz e/system-time-ms "Asia/Seoul"))
+                            ;; (dom/text (dayjs/tz e/system-time-ms "America/New_York"))
+                            ;; (dom/text (dayjs/tz (dayjs e/system-time-ms)
+                            ;;                     "America/New_York"))
+                            ;; (dom/text (.tz (dayjs "2013-11-18 11:55:20")
+                            ;;                "Asia/Seoul"))
+                            ;; (dom/text (.tz (dayjs (clj->js "2013-11-18 11:55:20"))
+                            ;;                "America/New_York"))
+                            ;; (dom/text (.tz (dayjs (clj->js "2013-11-18 11:55:20"))
+                            ;;                "Asia/Seoul"))
+                            ;; (dom/text (dayjs e/system-time-ms))
+                            (let [current-time (dayjs e/system-time-ms)]
+                              ;; (dom/text (dayjs/tz current-time "Asia/Seoul"))
+                              ;; (dom/text (dayjs/tz current-time "America/New_York"))
+                              ;; (dom/text (.tz current-time "Asia/Seoul"))
+                              ;; (dom/text (.tz current-time "America/New_York"))
+                              ;; (dom/text (.tz (dayjs "2014-06-01 12:00")
+                              ;;                "Asia/Seoul"))
+                              ;; (dom/text (.tz (dayjs "2014-06-01 12:00")
+                              ;;                "America/New_York"))
+                              (dom/text (dayjs current-time))
+                              ;; (dom/text (dayjs/tz (dayjs current-time)
+                              ;;                     "Asia/Seoul"))
+                              ;; (js/console.log (dayjs (e/snapshot current-time)))
+                              ;; (js/console.log (.tz (clj->js (dayjs (e/snapshot current-time)))
+                              ;;                      "Asia/Seoul"))
+                              ;; (js/console.log (.tz (clj->js (dayjs (e/snapshot current-time)))
+                              ;;                      "Asia/Seoul"))
+                              (js/console.log (.tz (dayjs (e/snapshot current-time))
+                                                   "Asia/Seoul"))
+                              (js/console.log (.tz (dayjs (e/snapshot current-time))
+                                                   "America/New_York"))
+                              ;; (dom/text (js->clj (dayjs current-time)))
+                              ;; (dom/text (js->clj (dayjs current-time)))
+                              ;; (dom/text (js/object? (dayjs current-time)))
+                              ;; (dom/text (dayjs/tz "2014-06-01 12:00"
+                              ;;                     "Asia/Seoul"))
+                              ;; (dom/text (dayjs/tz "2014-06-01 12:00"
+                              ;;                     "America/New_York"))
+                              )
                             (dom/text
-                             (let [date    (js/Date. (+ time-range-start
-                                                        (* 16 60 60 1000))) ; KST adjustment
+                             (let [date    (js/Date. time-range-start)
                                    options (clj->js
                                             (case time-group
                                               :hour  {:month "long"
                                                       :day   "numeric"
-                                                      :hour  "numeric"}
+                                                      :hour  "numeric"
+                                                      }
                                               :day   {:month "long"
                                                       :day   "numeric"}
                                               :month {:month "long"}))]
@@ -578,10 +630,8 @@
                               (dom/props {:class
                                           (tw "border-[b gray-400] last:border-b-0")})
                               (dom/div
-                                (dom/props {:class "card-body p-2 whitespace-pre"})
-                                (dom/text note)))))
-                        )
-                      ))))))
+                                (dom/props {:class "card-body p-2 whitespace-pre-line"})
+                                (dom/text note))))))))))))
           (u/textarea*
            running-note
            (e/fn [v]
@@ -593,7 +643,8 @@
                                   "w-full text-md"
                                   "grow focus:outline-none"
                                   (when-not (= selected-task-id running-task-id)
-                                    "invisible"))}))))
+                                    "invisible"))})))
+        )
       (dom/text "Select any task."))))
 
 (e/def some-value (e/server (:value (d/entity (e/watch !conn) 1000))))
