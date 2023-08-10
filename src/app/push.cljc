@@ -270,8 +270,7 @@
                                     (:task/name (d/entity db task-id)))
                        subtask-ids (e/server
                                     (sort (map :db/id (:task/subtask (d/entity db task-id)))))
-                       !toggled    (atom true)]
-                   (u/make-relay-task !toggled task-id :task/toggled)
+                       !toggled    (u/e-relay-atom task-id :task/toggled)]
                    (dom/div
                      (dom/props
                       {:class (tw "flex justify-between"
@@ -501,17 +500,13 @@
                                       (remove #(nil-or-empty? (:interval/note %)))
                                       (map #(select-keys % [:db/id :interval/start
                                                             :interval/note]))))
-                  !history-show (atom true),  history-show (e/watch !history-show)
-                  !time-group   (atom :hour), time-group   (e/watch !time-group)
-                  !show-full    (atom true),  show-full    (e/watch !show-full)]
-              ;; (dom/div
-              ;;   (dom/text history-show)
-              ;;   (dom/text
-              ;;    (e/server (:task/history-show (d/entity db selected-task-id)))))
+                  !history-show (u/selected-task-relay-atom :task/history-show)
+                  history-show  (e/watch !history-show)
+                  !time-group   (u/selected-task-relay-atom :task/time-group)
+                  time-group    (e/watch !time-group)
+                  !show-full    (u/selected-task-relay-atom :task/show-full)
+                  show-full     (e/watch !show-full)]
 
-              (u/make-relay-task !history-show selected-task-id :task/history-show)
-              (u/make-relay-task !time-group selected-task-id :task/time-group)
-              (u/make-relay-task !show-full selected-task-id :task/show-full)
               (when-not (nil-or-empty? past-notes)
                 (dom/div
                   (dom/props {:class (tw "flex gap-2")})
@@ -542,7 +537,8 @@
                                         :month :hour)))))
                     (when (= running-task-id selected-task-id)
                       (ui/button
-                        (e/fn [] (swap! !show-full not))
+                        (e/fn []
+                          (swap! !show-full not))
                         (dom/props {:class (tw "btn-[* xs] bg-base-300 hover:bg-base-100")})
                         (dom/text
                          (if show-full

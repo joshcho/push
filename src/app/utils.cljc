@@ -2,7 +2,10 @@
 
 (ns app.utils
   #?(:cljs (:require-macros [app.utils :refer [make-relay textarea*
-                                               make-relay-task]]))
+                                               make-relay-task
+                                               relay-atom
+                                               e-relay-atom
+                                               selected-task-relay-atom]]))
   (:require
    #?(:cljs
       [goog.string :as gstring])
@@ -238,58 +241,152 @@
          (reset! !selected-id-change false)
          (reset! !last-sent :null)))))
 
-;; (let [!last-sent          (atom :null)
-;;       !ignore-one         (atom true)
-;;       !selected-id-change (atom true)]
-;;   (e/for-event
-;;    [id (e/fn [] selected-task-id)]
-;;    (js/console.log "Selected task change: " id)
-;;    (reset! !history-show (e/server (:task/history-show
-;;                                     (d/entity db (e/snapshot selected-task-id)))))
-;;    (reset! !selected-id-change true))
-;;   (e/for-event
-;;    [v (e/fn [] history-show)]
-;;    (js/console.log "Changed history-show: " v)
-;;    (cond @!ignore-one
-;;          (do
-;;            (js/console.log "Ignoring one")
-;;            (reset! !ignore-one false))
-;;          :else
-;;          (do
-;;            (js/console.log "Sending to server")
-;;            (reset! !last-sent v)
-;;            (e/server
-;;             (tx/transact! !conn [{:db/id
-;;                                   (e/snapshot selected-task-id)
-;;                                   :task/history-show v}])))))
-;;   (e/for-event
-;;    [v (e/fn [] (e/server (:task/history-show
-;;                           (d/entity db selected-task-id))))]
-;;    (when (and (not (= v @!last-sent))
-;;               (not @!selected-id-change))
-;;      (js/console.log "Received history-show: " v)
-;;      (reset! !ignore-one true)
-;;      (reset! !history-show v))
-;;    (reset! !selected-id-change false)
-;;    (reset! !last-sent :null)))
+#?(:clj
+   (defn sane-me [form]
+     (clojure.walk/prewalk (fn [x] (if (qualified-symbol? x)
+                                    (symbol (name x))
+                                    x))
+                           (macroexpand-1 form))))
+
+(defn compare-with-previous
+  "Transducer that compares each item in a sequence with the previous
+  one, returning a pair [item, equals-previous?]. For the first item,
+  equals-previous? is nil. Optionally takes a keyfn that is used to
+  transform each item before comparison."
+  ([]
+   (compare-with-previous identity))
+  ([keyfn]
+   (let [prev (atom nil)]
+     (fn [rf]
+       (fn
+         ([] (rf))
+         ([result] (rf result))
+         ([result input]
+          (let [keyed-input (keyfn input)
+                output      (if (nil? @prev)
+                              [input nil]
+                              [input (= keyed-input @prev)])]
+            (reset! prev keyed-input)
+            (rf result output))))))))
+
+(defn ignore-first
+  "Transducer that ignores the first value in a sequence."
+  []
+  (fn [rf]
+    (let [first? (atom true)]
+      (fn
+        ([] (rf))
+        ([result] (rf result))
+        ([result input]
+         (if @first?
+           (do (reset! first? false) result)
+           (rf result input)))))))
+
+#?(:clj
+   (defmacro relay-atom
+     "Returns a relay atom that 1) propagates changes from user via
+     `server-effect` and 2) receives changes from the `server-query`.
+     Note that `server-effect` is a Clojure function, not Electric.
+     Specify `skip-effect-list` to prevent effects when they change."
+     ;; skip-effect-list can be automatically generated if we can
+     ;; figure out which parts of query are flows
+     ([server-query server-effect]
+      `(relay-atom ~server-query ~server-effect nil))
+     ([server-query server-effect skip-effect-list]
+      `(let [ref# (atom (e/server (e/snapshot ~server-query)))]
+         (e/for-event
+          [v# (m/eduction (remove e/failure?) (ignore-first) ; ignore initialization
+                          (e/fn [] (e/watch ref#)))]
+          (if (:stop-propagation (meta ref#))
+            (do
+              ;; (js/console.log "stopped propagation")
+              (alter-meta! ref# assoc :stop-propagation false))
+            (do
+              ;; (js/console.log "changing")
+              (e/server (~server-effect v#)))))
+         (e/for-event
+          [[data# equal-to-previous?# :as p#]
+           (m/eduction
+            (remove e/failure?)
+            (compare-with-previous rest) ; check whether values of skip-effect-list has changed
+            (e/fn []
+              (e/server [~server-query ~skip-effect-list])))]
+          ;; equal-to-previous?# is nil on first value, skip
+          (when (boolean? equal-to-previous?#)
+            (let [v# (first data#)]
+              (js/console.log p#)
+              (if equal-to-previous?#
+                (when-not (= v# @ref#)
+                  ;; (js/console.log "server change")
+                  (alter-meta! ref# assoc :stop-propagation true)
+                  (reset! ref# v#))
+                (do
+                  ;; (js/console.log "input flow change")
+                  )))))
+         ref#))))
 
 (comment
-  (tests
-   (let [test-atom (atom 0)
-         history-atom
-         (make-history-atom test-atom)]
-     (swap! test-atom inc)
-     (swap! test-atom inc)
-     (swap! test-atom inc)
-     @history-atom)
-   := [0 1 2 3]
-   (let [test-atom (atom nil)
-         history-atom
-         (make-history-atom test-atom)]
-     (reset! test-atom 0)
-     (swap! test-atom inc)
-     @history-atom)
-   := [0 1]))
+  ;; usage, do this in electric functions
+  (let [!value (relay-atom
+                (:some/value (d/entity db 42)) ; server query
+                (fn [v]                         ; server effect
+                  (d/transact! !conn [{:db/id      42
+                                       :some/value v}])))
+        value  (e/watch !value) ; if query is changed in another session, !value is also updated
+        ]
+    (ui/button
+      (e/fn []
+        (if (= value "A")
+          (reset! !value "B")           ; triggers server change
+          (reset! !value "A")           ; triggers server change
+          ))
+      (dom/text value))))
+
+(comment
+  (let [!value (e-relay-atom 42 :some/value)
+        value  (e/watch !value)]
+    (ui/button
+      (e/fn []
+        (if (= value "A")
+          (reset! !value "B")
+          (reset! !value "A")
+          ))
+      (dom/text value))))
+
+#?(:clj
+   (defmacro e-relay-atom
+     "A convenience macro for using `relay-atom` with Datomic-like database. "
+     [e-id attr]
+     `(relay-atom
+       (~attr (d/entity ~'db ~e-id))
+       (fn [v#]
+         (d/transact! ~'!conn [{:db/id ~e-id
+                                ~attr  v#}])
+         ;; prevents transfer of result of transact! over wire, maybe not necessary
+         nil)
+       [~e-id])))
+
+#?(:clj
+   (defmacro selected-task-relay-atom [attr]
+     `(e-relay-atom ~'selected-task-id ~attr)))
+
+(comment
+ (tests
+  (let [test-atom (atom 0)
+        history-atom
+        (make-history-atom test-atom)]
+    (swap! test-atom inc)
+    (swap! test-atom inc)
+    (swap! test-atom inc)
+    @history-atom)
+  := [0 1 2 3]
+  (let [test-atom (atom nil)
+        history-atom
+        (make-history-atom test-atom)]
+    (reset! test-atom 0)
+    (swap! test-atom inc)
+    @history-atom)
+  := [0 1]))
 
 #?(:cljs (defn value [^js e] (.-target.value e))) ; workaround inference warnings, todo rename
 
