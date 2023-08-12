@@ -1,8 +1,7 @@
 ;; {:nextjournal.clerk/visibility {:code :hide :result :hide}}
 
 (ns app.utils
-  #?(:cljs (:require-macros [app.utils :refer [make-relay textarea*
-                                               make-relay-task
+  #?(:cljs (:require-macros [app.utils :refer [textarea*
                                                relay-atom
                                                e-relay-atom
                                                selected-task-relay-atom]]))
@@ -173,46 +172,46 @@
    [(assoc nextjournal.clerk.viewer/code-block-viewer
            :render-fn '(fn [text opts] your own render logic ))])
 
-#?(:clj
-   (defmacro make-relay-task
-     [ref selected-task-id attr]
-     `(let [!last-sent          (atom :null)
-            !ignore-one         (atom true)
-            !selected-id-change (atom true)]
-        (e/for-event
-         [id# (e/fn [] ~selected-task-id)]
-         ;; (js/console.log "Selected task change: " id#)
-         (reset! ~ref (e/server (~attr (d/entity ~'db id#))))
-         (reset! !selected-id-change true))
+;; #?(:clj
+;;    (defmacro make-relay-task
+;;      [ref selected-task-id attr]
+;;      `(let [!last-sent          (atom :null)
+;;             !ignore-one         (atom true)
+;;             !selected-id-change (atom true)]
+;;         (e/for-event
+;;          [id# (e/fn [] ~selected-task-id)]
+;;          ;; (js/console.log "Selected task change: " id#)
+;;          (reset! ~ref (e/server (~attr (d/entity ~'db id#))))
+;;          (reset! !selected-id-change true))
 
-        (e/for-event
-         [v# (e/fn [] (e/watch ~ref))]
-         ;; (js/console.log "Changed " ~(name attr) ":" v#)
-         (cond @!ignore-one
-               (do
-                 ;; (js/console.log "Ignoring one")
-                 (reset! !ignore-one false))
-               @!selected-id-change
-               (reset! !selected-id-change false)
-               :else
-               (do
-                 ;; (js/console.log "Sending to server")
-                 (reset! !last-sent v#)
-                 (e/server
-                  (tx/transact! ~'!conn [{:db/id
-                                          (e/snapshot ~selected-task-id)
-                                          ~attr v#}])))))
+;;         (e/for-event
+;;          [v# (e/fn [] (e/watch ~ref))]
+;;          ;; (js/console.log "Changed " ~(name attr) ":" v#)
+;;          (cond @!ignore-one
+;;                (do
+;;                  ;; (js/console.log "Ignoring one")
+;;                  (reset! !ignore-one false))
+;;                @!selected-id-change
+;;                (reset! !selected-id-change false)
+;;                :else
+;;                (do
+;;                  ;; (js/console.log "Sending to server")
+;;                  (reset! !last-sent v#)
+;;                  (e/server
+;;                   (tx/transact! ~'!conn [{:db/id
+;;                                           (e/snapshot ~selected-task-id)
+;;                                           ~attr v#}])))))
 
-        (e/for-event
-         [v# (e/fn [] (e/server (~attr
-                                 (d/entity ~'db ~selected-task-id))))]
-         (when (and (not (= v# @!last-sent))
-                    (not @!selected-id-change))
-           ;; (js/console.log "Received " ~(name attr) ":" v#)
-           (reset! !ignore-one true)
-           (reset! ~ref v#))
-         (reset! !selected-id-change false)
-         (reset! !last-sent :null)))))
+;;         (e/for-event
+;;          [v# (e/fn [] (e/server (~attr
+;;                                  (d/entity ~'db ~selected-task-id))))]
+;;          (when (and (not (= v# @!last-sent))
+;;                     (not @!selected-id-change))
+;;            ;; (js/console.log "Received " ~(name attr) ":" v#)
+;;            (reset! !ignore-one true)
+;;            (reset! ~ref v#))
+;;          (reset! !selected-id-change false)
+;;          (reset! !last-sent :null)))))
 
 #?(:clj
    (defn sane-me [form]
