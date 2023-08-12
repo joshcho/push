@@ -1,6 +1,7 @@
 (ns app.db
   (:require
    [datalevin.core :as d]
+   [contrib.data :refer [nil-or-empty?]]
    ;; [datascript.core :as d]
    ))
 
@@ -29,6 +30,15 @@
           (ancestor ?ancestor ?task)]
         db rules task-id)
    reverse))
+
+(defn get-notes-from-task-id [db task-id]
+  (->> (d/entity db task-id)
+       :task/interval
+       (remove #(nil-or-empty? (:interval/note %)))
+       (map #(select-keys % [:db/id
+                             :interval/start
+                             :interval/end
+                             :interval/note]))))
 
 (defn get-descendant-task-ids [db task-id]
   (->

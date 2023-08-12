@@ -329,6 +329,27 @@
      @history-atom)
    := [0 1]))
 
+(defn compare-with-previous
+  "Transducer that compares each item in a sequence with the previous
+  one, returning a pair [item, equals-previous?]. For the first item,
+  equals-previous? is nil. Optionally takes a keyfn that is used to
+  transform each item before comparison."
+  ([]
+   (compare-with-previous identity))
+  ([keyfn]
+   (let [prev (atom nil)]
+     (fn [rf]
+       (fn
+         ([] (rf))
+         ([result] (rf result))
+         ([result input]
+          (let [keyed-input (keyfn input)
+                output      (if (nil? @prev)
+                              [input nil]
+                              [input (= keyed-input @prev)])]
+            (reset! prev keyed-input)
+            (rf result output))))))))
+
 #?(:cljs (defn value [^js e] (.-target.value e))) ; workaround inference warnings, todo rename
 
 #?(:clj

@@ -493,21 +493,29 @@
           ;;          (to-date end))))))
           (dom/div
             (dom/props {:class (tw "flex-[* col] gap-3 mt-1 mb-2")})
-            (let [past-notes    (e/server
-                                 (->> (d/entity db selected-task-id)
-                                      :task/interval
-                                      (sort-by :interval/start)
-                                      (remove #(nil-or-empty? (:interval/note %)))
-                                      (map #(select-keys % [:db/id :interval/start
-                                                            :interval/note]))))
+            (let [ ;; task-notes    (e/server
+                  ;;                (db/get-notes-from-task-id
+                  ;;                 db selected-task-id))
+
+                  ;; includes itself
+                  task-notes
+                  (e/server
+                   (->>
+                    (e/server (conj (db/get-descendant-task-ids
+                                     db selected-task-id)
+                                    selected-task-id))
+                    (mapcat
+                     (fn [task-id]
+                       (map #(assoc % :interval/task task-id)
+                            (db/get-notes-from-task-id db task-id))))
+                    (sort-by :interval/start)))
                   !history-show (u/selected-task-relay-atom :task/history-show)
                   history-show  (e/watch !history-show)
                   !time-group   (u/selected-task-relay-atom :task/time-group)
                   time-group    (e/watch !time-group)
                   !show-full    (u/selected-task-relay-atom :task/show-full)
                   show-full     (e/watch !show-full)]
-
-              (when-not (nil-or-empty? past-notes)
+              (when-not (nil-or-empty? task-notes)
                 (dom/div
                   (dom/props {:class (tw "flex gap-2")})
                   (ui/button
@@ -544,7 +552,7 @@
                          (if show-full
                            "show short"
                            "show full")))))))
-              (when (not (nil-or-empty? past-notes))
+              (when (not (nil-or-empty? task-notes))
                 (dom/div
                   (dom/props {:class (tw "flex-[* col] gap-3 mb-2"
                                          (when (and (not show-full)
@@ -554,39 +562,38 @@
                                          (when-not history-show
                                            "hidden"))})
                   (e/for [[range-time same-range-note-maps]
-                          (group-by
-                           #(.format
-                             (tz-dayjs (:interval/start %))
-                             ;; L is MM/DD/YYYY
-                             ;; these formats do the following:
-                             ;; 1) checking if same hour/day/month
-                             ;; 2) possibility of reverting on .dayjs call
-                             (cond (= time-group :hour)  "L HH:00"
-                                   (= time-group :day)   "L"
-                                   (= time-group :month) "MMMM YYYY"
-                                   :else                 "L"))
-                           past-notes)]
+                          (->>
+                           (map
+                            #(let [ms (.valueOf (.startOf (tz-dayjs (:interval/start %))
+                                                          (if time-group
+                                                            (name time-group)
+                                                            "day")))]
+                               (vector ms %))
+                            task-notes)
+                           (group-by first)
+                           (sort-by first)
+                           reverse
+                           (map (fn [[ms grouped]]
+                                  [(tz-dayjs ms) (map last grouped)])))]
                     (when-not (nil-or-empty? same-range-note-maps)
                       (dom/div
                         (dom/text
                          (cond (and (u/in? [:hour :day] time-group)
-                                    (= (.format (tz-dayjs e/system-time-ms) "L")
-                                       (.format (new-dayjs range-time) "L")))
+                                    (= (.startOf (tz-dayjs) "day")
+                                       (.startOf range-time "day")))
                                (str "Today"
                                     (when (= time-group :hour)
                                       (str " at "
-                                           (.format (new-dayjs range-time) " h A"))))
+                                           (.format range-time " h A"))))
                                (and (u/in? [:hour :day] time-group)
-                                    (= (.format (.subtract
-                                                 (tz-dayjs e/system-time-ms)
-                                                 1 "day") "L")
-                                       (.format (new-dayjs range-time) "L")))
+                                    (= (.subtract (.startOf (tz-dayjs) "day")
+                                                  1 "day")
+                                       (.startOf range-time "day")))
                                (str "Yesterday"
                                     (when (= time-group :hour)
-                                      (str " at "
-                                           (.format (new-dayjs range-time) " h A"))))
+                                      (str " at " (.format range-time " h A"))))
                                :else
-                               (.format (new-dayjs range-time)
+                               (.format range-time
                                         (case time-group
                                           :hour  "MMMM Do h A"
                                           :day   "MMMM Do"
@@ -594,10 +601,25 @@
                                           "MMMM Do")))))
                       (dom/div
                         (dom/props {:class (tw "bg-base-100 card py-[4px] px-3")})
-                        (e/for [note (map :interval/note same-range-note-maps)]
+                        (e/for [[{:interval/keys
+                                  [note task]}
+                                 equal-to-previous?]
+                                (sequence
+                                 (u/compare-with-previous :interval/task)
+                                 (->> same-range-note-maps
+                                      (sort-by :interval/start)))]
                           (dom/div
                             ;; (dom/props {:class
                             ;;             (tw "border-[b gray-400] last:border-b-0")})
+                            (when-not equal-to-previous?
+                              (when-not (and (= task selected-task-id)
+                                             (= (count (set (map :interval/task same-range-note-maps)))
+                                                1))
+                                (ui/button
+                                  (e/fn []
+                                    (reset! !selected-task-id task))
+                                  (dom/props {:class (tw "font-bold")})
+                                  (dom/text (e/server (:task/name (d/entity db task)))))))
                             (dom/div
                               (dom/props {:class (tw "card-body p-[2px]"
                                                      "whitespace-pre-line")})
