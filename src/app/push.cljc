@@ -16,11 +16,23 @@
    ;;    [clojure.tools.macro :as macro])
    [missionary.core :as m]
    [contrib.data :refer [nil-or-empty?]]
+   remarkable
+   remarkable-katex
    #?(:cljs ["dayjs" :as dayjs])
    #?(:cljs ["dayjs/plugin/utc" :as utc])
    #?(:cljs ["dayjs/plugin/timezone" :as timezone])
    #?(:cljs ["dayjs/plugin/localizedFormat" :as localizedFormat])
    #?(:cljs ["dayjs/plugin/advancedFormat" :as advancedFormat])))
+
+#?(:cljs
+   (do
+     (def -md (new (.-Remarkable remarkable)))
+     (.use -md remarkable-katex)))
+(e/defn Markdown [content]
+  #?(:cljs
+     (dom/div
+       (set! (.-innerHTML dom/node)
+             (.render -md content)))))
 
 #?(:cljs
    (do
@@ -240,16 +252,21 @@
     ;; (dom/on "click"
     ;;         (e/fn [e]
     ;;           (reset! !selected-task-id nil)))
-    (let [!editing           (atom false), editing           (e/watch !editing)
-          !task-list-toggled (atom false), task-list-toggled (e/watch !task-list-toggled)]
+    (let [!editing          (atom false), editing (e/watch !editing)
+          task-list-toggled (e/server (:user/task-list-toggled (d/entity db user-id)))]
       (dom/div
         (dom/props {:class "text-xl font-bold flex items-center"})
         (ui/button
-          (e/fn [] (reset! !selected-task-id running-task-id))
+          (e/fn []
+            (e/server
+             (tx/transact! !conn [{:db/id (e/snapshot user-id)
+                                   :user/task-list-toggled
+                                   (not (:user/task-list-toggled
+                                         (d/entity (e/snapshot db)
+                                                   (e/snapshot user-id))))}])))
           (dom/on "click" (e/fn [e]
                             (.stopPropagation e)))
           (dom/text "Day 5"))
-        (Toggle. !task-list-toggled)
         (ui/button
           (e/fn [] (swap! !editing not))
           (dom/props {:class (tw "ml-2 btn-[* xs] mt-[1px] bg-base-100")})
@@ -257,8 +274,9 @@
                             (.stopPropagation e)))
           (dom/text (if editing "stop editing" "edit"))))
       (dom/div
-        (dom/props {:class (when task-list-toggled
-                             "hidden")})
+        (dom/props {:class (tw "sm:block"
+                               (when task-list-toggled
+                                 "hidden"))})
         (binding
             [TaskList
              (e/fn [task-ids]
@@ -451,7 +469,7 @@
 
 (e/defn SelectedPanel []
   (dom/div
-    (dom/props {:class "grow pl-2 py-2 pr-4 sm:ml-2 rounded bg-base-200 sm:min-h-full"})
+    (dom/props {:class "grow pl-2 py-2 pr-4 sm:ml-2 rounded bg-base-200 sm:min-h-full max-w-full sm:max-w-[calc(100%-250px)]"})
     (dom/div
       (Breadcrumbs.))
     (if selected-task-id
@@ -463,7 +481,7 @@
                      (-> (d/entity db selected-task-id)
                          :task/name))) )
         (dom/div
-          (dom/props {:class "ml-2 mt-[1px] h-[700px] flex flex-col"})
+          (dom/props {:class "ml-2 mt-[1px] h-[700px] flex flex-col max-w-full"})
           ;; start/stop/cancel
           (dom/div
             (dom/props {:class "mb-[5px]"})
@@ -492,150 +510,184 @@
           ;;          " ~ "
           ;;          (to-date end))))))
           (dom/div
-            (dom/props {:class (tw "flex-[* col] gap-3 mt-1 mb-2")})
-            (let [ ;; task-notes    (e/server
-                  ;;                (db/get-notes-from-task-id
-                  ;;                 db selected-task-id))
+            (dom/props {:class (tw "flex-[* col] h-[calc(100%-50px)]")})
+            (u/textarea*
+             running-note
+             (e/fn [v]
+               (e/server
+                (tx/transact! !conn [{:db/id         running-interval-id
+                                      :interval/note v}])))
+             ;; (dom/style {:background-color "bg-base-200"})
+             (dom/props {:class (tw "textarea-[* sm primary] leading-5 px-2"
+                                    "w-full text-md"
+                                    "grow focus:outline-none my-2 h-[25%]"
+                                    (when-not (= selected-task-id running-task-id)
+                                      "hidden"))}))
+            (dom/div
+              (dom/props {:class (tw "flex-[* col] gap-3 mt-1 mb-2 h-[75%]")})
+              (let [ ;; task-notes    (e/server
+                    ;;                (db/get-notes-from-task-id
+                    ;;                 db selected-task-id))
 
-                  ;; includes itself
-                  task-notes
-                  (e/server
-                   (->>
-                    (e/server (conj (db/get-descendant-task-ids
-                                     db selected-task-id)
-                                    selected-task-id))
-                    (mapcat
-                     (fn [task-id]
-                       (map #(assoc % :interval/task task-id)
-                            (db/get-notes-from-task-id db task-id))))
-                    (sort-by :interval/start)))
-                  !history-show (u/selected-task-relay-atom :task/history-show)
-                  history-show  (e/watch !history-show)
-                  !time-group   (u/selected-task-relay-atom :task/time-group)
-                  time-group    (e/watch !time-group)
-                  !show-full    (u/selected-task-relay-atom :task/show-full)
-                  show-full     (e/watch !show-full)]
-              (when-not (nil-or-empty? task-notes)
-                (dom/div
-                  (dom/props {:class (tw "flex gap-2")})
-                  (ui/button
-                    (e/fn [] (swap! !history-show not))
-                    (dom/props {:class (tw "btn-[* xs] bg-base-300 hover:bg-base-100")})
-                    (dom/text
-                     (if history-show
-                       "hide past notes"
-                       "show past notes")))
-                  (when history-show
-                    (ui/button
-                      (e/fn []
-                        (swap! !time-group (fn [tg]
-                                             (cond (= tg :hour)
-                                                   :day
-                                                   (= tg :day)
-                                                   :month
-                                                   (= tg :month)
-                                                   :hour
-                                                   :else :day))))
-                      (dom/props {:class (tw "btn-[* xs] bg-base-300 hover:bg-base-100")})
-                      (dom/text (str "group by "
-                                     (name
-                                      (case time-group
-                                        :hour  :day
-                                        :day   :month
-                                        :month :hour)))))
-                    (when (= running-task-id selected-task-id)
+                    ;; includes itself
+                    task-notes
+                    (e/server
+                     (->>
+                      (e/server (conj (db/get-descendant-task-ids
+                                       db selected-task-id)
+                                      selected-task-id))
+                      (mapcat
+                       (fn [task-id]
+                         (map #(assoc % :interval/task task-id)
+                              (db/get-notes-from-task-id db task-id))))
+                      (sort-by :interval/start)))
+                    !history-show (u/selected-task-relay-atom :task/history-show)
+                    history-show  (e/watch !history-show)
+                    !time-group   (u/selected-task-relay-atom :task/time-group)
+                    time-group    (e/watch !time-group)
+                    !show-full    (u/selected-task-relay-atom :task/show-full)
+                    show-full     (e/watch !show-full)]
+                (when-not (nil-or-empty? task-notes)
+                  (dom/div
+                    (dom/props {:class (tw "flex gap-2")})
+                    ;; (ui/button
+                    ;;   (e/fn [] (swap! !history-show not))
+                    ;;   (dom/props {:class (tw "btn-[* xs] bg-base-300 hover:bg-base-100")})
+                    ;;   (dom/text
+                    ;;    (if history-show
+                    ;;      "hide past notes"
+                    ;;      "show past notes")))
+                    (when history-show
                       (ui/button
                         (e/fn []
-                          (swap! !show-full not))
+                          (swap! !time-group (fn [tg]
+                                               (cond (= tg :hour)
+                                                     :day
+                                                     (= tg :day)
+                                                     :month
+                                                     (= tg :month)
+                                                     :hour
+                                                     :else :day))))
                         (dom/props {:class (tw "btn-[* xs] bg-base-300 hover:bg-base-100")})
-                        (dom/text
-                         (if show-full
-                           "show short"
-                           "show full")))))))
-              (when (not (nil-or-empty? task-notes))
-                (dom/div
-                  (dom/props {:class (tw "flex-[* col] gap-3 mb-2"
-                                         (when (and (not show-full)
-                                                    (= selected-task-id
-                                                       running-task-id))
-                                           "max-h-96 overflow-auto")
-                                         (when-not history-show
-                                           "hidden"))})
-                  (e/for [[range-time same-range-note-maps]
-                          (->>
-                           (map
-                            #(let [ms (.valueOf (.startOf (tz-dayjs (:interval/start %))
-                                                          (if time-group
-                                                            (name time-group)
-                                                            "day")))]
-                               (vector ms %))
-                            task-notes)
-                           (group-by first)
-                           (sort-by first)
-                           reverse
-                           (map (fn [[ms grouped]]
-                                  [(tz-dayjs ms) (map last grouped)])))]
-                    (when-not (nil-or-empty? same-range-note-maps)
-                      (dom/div
-                        (dom/text
-                         (cond (and (u/in? [:hour :day] time-group)
-                                    (= (.startOf (tz-dayjs) "day")
-                                       (.startOf range-time "day")))
-                               (str "Today"
-                                    (when (= time-group :hour)
-                                      (str " at "
-                                           (.format range-time " h A"))))
-                               (and (u/in? [:hour :day] time-group)
-                                    (= (.subtract (.startOf (tz-dayjs) "day")
-                                                  1 "day")
-                                       (.startOf range-time "day")))
-                               (str "Yesterday"
-                                    (when (= time-group :hour)
-                                      (str " at " (.format range-time " h A"))))
-                               :else
-                               (.format range-time
+                        (dom/text (str "group by "
+                                       (name
                                         (case time-group
-                                          :hour  "MMMM Do h A"
-                                          :day   "MMMM Do"
-                                          :month "MMMM YYYY"
-                                          "MMMM Do")))))
-                      (dom/div
-                        (dom/props {:class (tw "bg-base-100 card py-[4px] px-3")})
-                        (e/for [[{:interval/keys
-                                  [note task]}
-                                 equal-to-previous?]
-                                (sequence
-                                 (u/compare-with-previous :interval/task)
-                                 (->> same-range-note-maps
-                                      (sort-by :interval/start)))]
-                          (dom/div
-                            ;; (dom/props {:class
-                            ;;             (tw "border-[b gray-400] last:border-b-0")})
-                            (when-not equal-to-previous?
-                              (when-not (and (= task selected-task-id)
-                                             (= (count (set (map :interval/task same-range-note-maps)))
-                                                1))
-                                (ui/button
-                                  (e/fn []
-                                    (reset! !selected-task-id task))
-                                  (dom/props {:class (tw "font-bold")})
-                                  (dom/text (e/server (:task/name (d/entity db task)))))))
+                                          :hour  :day
+                                          :day   :month
+                                          :month :hour)))))
+                      ;; (when (= running-task-id selected-task-id)
+                      ;;   (ui/button
+                      ;;     (e/fn []
+                      ;;       (swap! !show-full not))
+                      ;;     (dom/props {:class (tw "btn-[* xs] bg-base-300 hover:bg-base-100")})
+                      ;;     (dom/text
+                      ;;      (if show-full
+                      ;;        "show short"
+                      ;;        "show full"))))
+                      )))
+                (when (not (nil-or-empty? task-notes))
+                  (dom/div
+                    (dom/props {:class (tw "flex-[* col] gap-3 mb-2 overflow-y-scroll overflow-auto scrollbar-hide"
+                                           ;; (when (and (not show-full)
+                                           ;;            (= selected-task-id
+                                           ;;               running-task-id))
+                                           ;;   "max-h-96 overflow-auto")
+                                           (when-not history-show
+                                             "hidden"))})
+                    (e/for [[range-time same-range-note-maps]
+                            (->>
+                             (map
+                              #(let [ms (.valueOf (.startOf (tz-dayjs (:interval/start %))
+                                                            (if time-group
+                                                              (name time-group)
+                                                              "day")))]
+                                 (vector ms %))
+                              task-notes)
+                             (group-by first)
+                             (sort-by first)
+                             reverse
+                             (map (fn [[ms grouped]]
+                                    [(tz-dayjs ms) (map last grouped)])))]
+                      (when-not (nil-or-empty? same-range-note-maps)
+                        (dom/div
+                          (dom/text
+                           (cond (and (u/in? [:hour :day] time-group)
+                                      (.isSame (.startOf (tz-dayjs) "day")
+                                               (.startOf range-time "day")))
+                                 (str "Today"
+                                      (when (= time-group :hour)
+                                        (str " at "
+                                             (.format range-time " h A"))))
+                                 (and (u/in? [:hour :day] time-group)
+                                      (.isSame (.subtract (.startOf (tz-dayjs) "day")
+                                                          1 "day")
+                                               (.startOf range-time "day")))
+                                 (str "Yesterday"
+                                      (when (= time-group :hour)
+                                        (str " at " (.format range-time " h A"))))
+                                 :else
+                                 (.format range-time
+                                          (case time-group
+                                            :hour  "MMMM Do h A"
+                                            :day   "MMMM Do"
+                                            :month "MMMM YYYY"
+                                            "MMMM Do")))))
+                        (dom/div
+                          (dom/props {:class (tw "bg-base-100 card py-[4px] px-3")})
+                          (e/for [[{:interval/keys
+                                    [note task]
+                                    interval-id :db/id}
+                                   equal-to-previous?]
+                                  (sequence
+                                   (u/compare-with-previous :interval/task)
+                                   (->> same-range-note-maps
+                                        (sort-by :interval/start)))]
                             (dom/div
-                              (dom/props {:class (tw "card-body p-[2px]"
-                                                     "whitespace-pre-line")})
-                              (dom/text note)))))))))))
-          (u/textarea*
-           running-note
-           (e/fn [v]
-             (e/server
-              (tx/transact! !conn [{:db/id         running-interval-id
-                                    :interval/note v}])))
-           (dom/style {:background-color "bg-base-200"})
-           (dom/props {:class (tw "textarea-[* sm primary]"
-                                  "w-full text-md"
-                                  "grow focus:outline-none"
-                                  (when-not (= selected-task-id running-task-id)
-                                    "invisible"))}))))
+                              ;; (dom/props {:class
+                              ;;             (tw "border-[b gray-400] last:border-b-0")})
+                              (dom/props {:class "w-full"})
+                              (when-not equal-to-previous?
+                                (when-not (and (= task selected-task-id)
+                                               (= (count (set (map :interval/task same-range-note-maps)))
+                                                  1))
+                                  (ui/button
+                                    (e/fn []
+                                      (reset! !selected-task-id task))
+                                    (dom/props {:class (tw "font-bold")})
+                                    (dom/text (e/server (:task/name (d/entity db task)))))))
+                              ;; (dom/text interval-id)
+                              (let [!editing    (atom false)
+                                    editing     (e/watch !editing)
+                                    !local-note (atom note)
+                                    local-note  (e/watch !local-note)]
+                                (dom/div
+                                  (dom/props {:class (tw "group card-body overflow-hidden"
+                                                         (if editing
+                                                           "p-0"
+                                                           "p-[2px]"))})
+                                  (if editing
+                                    (ui/textarea
+                                     (e/watch !local-note)
+                                     (e/fn [v]
+                                       (reset! !local-note v))
+                                     (dom/props {:class (tw "textarea-[* sm primary]"
+                                                            "leading-5 px-2"
+                                                            "text-md focus:outline-none")}))
+                                    (Markdown. note))
+                                  (ui/button
+                                    (e/fn []
+                                      (when (e/snapshot editing)
+                                        (e/server
+                                         (tx/transact!
+                                          !conn
+                                          [{:db/id         interval-id
+                                            :interval/note (e/snapshot local-note)}])))
+                                      (swap! !editing not))
+                                    (dom/props {:class (tw "btn-[* xs] absolute right-[6px] group-hover:block sm:hidden")})
+                                    (dom/text
+                                     (if editing
+                                       "confirm"
+                                       "edit")))))))))))))))))
       (dom/text "Select any task."))))
 
 (e/def some-value (e/server (:value (d/entity (e/watch !conn) 1000))))
@@ -659,9 +711,10 @@
            (swap! !present assoc session-id username)
            (e/on-unmount #(swap! !present dissoc session-id)))
           ;; (dom/div (dom/text "[" user-id "] " username))
+
           (when user-id
             (dom/div
-              (dom/props {:class "m-10 sm:flex h-fit min-w-[14rem]"})
+              (dom/props {:class "m-4 sm:m-10 sm:flex h-fit min-w-[14rem] max-w-full"})
               (dom/style {:touch-action "manipulation"})
               (TasksPanel.)
               (SelectedPanel.)))))))))
