@@ -16,8 +16,8 @@
    ;;    [clojure.tools.macro :as macro])
    [missionary.core :as m]
    [contrib.data :refer [nil-or-empty?]]
-   remarkable
-   remarkable-katex
+   #?(:cljs remarkable)
+   #?(:cljs remarkable-katex)
    #?(:cljs ["dayjs" :as dayjs])
    #?(:cljs ["dayjs/plugin/utc" :as utc])
    #?(:cljs ["dayjs/plugin/timezone" :as timezone])
