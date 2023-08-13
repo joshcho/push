@@ -235,7 +235,12 @@
 
 #?(:clj
    (do
-     (defmacro relay-atom [server-query server-effect]
+     (defmacro relay-atom
+       "Returns a relay atom that 1) propagates changes from user via
+  `server-effect` and 2) receives changes from the `server-query`.
+  Note that `server-effect` is a Clojure function, not Electric.
+  Specify `skip-effect-list` to prevent effects when they change."
+       [server-query server-effect]
        `(let [!relay#            (atom (e/server
                                         (e/snapshot ~server-query)))
               !send-count#       (atom 0)
